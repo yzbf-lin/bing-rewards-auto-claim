@@ -131,6 +131,23 @@ test("recognizes every enabled daily-activity link as one-click", () => {
   );
 });
 
+test("uses a daily-activity points badge when card text has no plus sign", () => {
+  assert.deepEqual(
+    classifyEntry(entry({
+      section: "每日活动",
+      title: "自然奇观",
+      text: "自然奇观 探索今日主题 10",
+      rewardPoints: 10,
+      url: "https://www.bing.com/search?q=nature&rnoreward=1",
+    })),
+    {
+      decision: "ELIGIBLE",
+      reason: "KNOWN_ONE_STEP_REWARD",
+      rewardPoints: 10,
+    },
+  );
+});
+
 test("recognizes a positive claimable-points button", () => {
   assert.deepEqual(
     classifyEntry(entry({

@@ -55,7 +55,10 @@ export function classifyEntry(entry) {
   const text = normalize(entry.text);
   const url = normalize(entry.url);
   const searchable = `${title} ${text} ${url}`;
-  const rewardPoints = findRewardPoints(`${title} ${text}`);
+  const declaredRewardPoints = Number(entry.rewardPoints);
+  const rewardPoints = Number.isFinite(declaredRewardPoints) && declaredRewardPoints > 0
+    ? declaredRewardPoints
+    : findRewardPoints(`${title} ${text}`);
 
   if (entry.disabled) {
     return { decision: "SKIPPED", reason: "DISABLED", rewardPoints };

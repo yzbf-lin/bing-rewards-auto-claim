@@ -113,12 +113,26 @@ export function collectDashboardEntries() {
 
   elements.forEach((element) => {
     const text = normalize(element.innerText || element.textContent);
+    const group = element.closest?.('[role="group"]');
+    const section = groupName(group) || "积分首页";
     const claimMatch = element.tagName === "BUTTON"
       ? text.match(/可领取(?:\s+可领取)?\s+([\d,]+)\s+领取/i)
       : null;
     const claimablePoints = claimMatch ? Number(claimMatch[1].replaceAll(",", "")) : 0;
+    const dailyRewardPoints = section === "每日活动"
+      ? Array.from(element.querySelectorAll("p"))
+        .map((paragraph) => normalize(paragraph.textContent))
+        .reverse()
+        .map((value) => value.match(/^\+?\s*([\d,]{1,9})(?:\s*(?:积分|points?))?$/i))
+        .find(Boolean)
+      : null;
+    const detectedRewardPoints = claimablePoints > 0
+      ? claimablePoints
+      : dailyRewardPoints
+        ? Number(dailyRewardPoints[1].replaceAll(",", ""))
+        : null;
     const explicitReward = /\+\s*[\d,]{1,9}(?:\s*(?:积分|points?))?/i.test(text);
-    if (!explicitReward && claimablePoints <= 0) return;
+    if (!explicitReward && detectedRewardPoints === null) return;
 
     const id = `dashboard-entry-${entries.length}`;
     const imageTitle = normalize(element.querySelector("img[alt]")?.getAttribute("alt"));
@@ -139,16 +153,16 @@ export function collectDashboardEntries() {
     if (claimablePoints > 0) {
       element.setAttribute("data-rewards-auto-action", "claim-points");
     }
-    const group = element.closest?.('[role="group"]');
     entries.push({
       id,
-      section: claimablePoints > 0 ? "待领取积分" : groupName(group) || "积分首页",
+      section: claimablePoints > 0 ? "待领取积分" : section,
       title,
       text,
       kind: element.tagName === "A" ? "link" : "button",
       url: element.tagName === "A" ? element.href || element.getAttribute("href") : null,
       disabled,
       action: claimablePoints > 0 ? "claim-points" : null,
+      rewardPoints: detectedRewardPoints,
     });
   });
 

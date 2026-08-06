@@ -37,6 +37,9 @@ function card({ tagName = "A", text = "领取奖励 +5", title = "领取奖励",
       }
       return null;
     },
+    querySelectorAll() {
+      return [];
+    },
     matches(selector) {
       return selector.includes("a") ? tagName === "A" : tagName === "BUTTON";
     },
@@ -198,6 +201,32 @@ test("labels dashboard cards through their aria-labelledby group", () => {
   const result = collectDashboardEntries();
 
   assert.equal(result.entries[0].section, "每日活动");
+});
+
+test("collects daily activity cards whose points badge has no plus sign", () => {
+  const dailyTopic = card({
+    text: "自然奇观 探索今日主题 10",
+    title: "自然奇观",
+    href: "https://www.bing.com/search?q=nature&rnoreward=1",
+  });
+  dailyTopic.querySelectorAll = (selector) => selector === "p"
+    ? [
+      { textContent: "自然奇观" },
+      { textContent: "探索今日主题" },
+      { textContent: "10" },
+    ]
+    : [];
+  const dailyGroup = group("每日活动", [dailyTopic]);
+  dailyTopic.closest = (selector) => selector === '[role="group"]' ? dailyGroup : null;
+  installDocument([]);
+  document.querySelectorAll = (selector) =>
+    selector === "a[href], button" ? [dailyTopic] : [];
+
+  const result = collectDashboardEntries();
+
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].section, "每日活动");
+  assert.equal(result.entries[0].rewardPoints, 10);
 });
 
 test("collects a positive claimable-points button", () => {
