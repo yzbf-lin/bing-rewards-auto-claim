@@ -63,6 +63,55 @@ h1 {
   font-size: 13px;
 }
 
+.update-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px 12px;
+  margin-top: 12px;
+  border: 1px solid #fda29b;
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: #fff4f2;
+}
+
+.update-card[hidden] {
+  display: none;
+}
+
+.update-version,
+.update-feedback {
+  margin: 0;
+  font-size: 12px;
+}
+
+.update-version {
+  color: #912018;
+  font-weight: 700;
+}
+
+.update-feedback {
+  grid-column: 1 / -1;
+  color: #667085;
+}
+
+.download-button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 11px;
+  background: #d92d20;
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.download-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .primary-button {
   width: 100%;
   min-height: 44px;
