@@ -6,6 +6,7 @@ const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8
 const requiredFiles = [
   manifest.background?.service_worker,
   manifest.action?.default_popup,
+  ...(manifest.content_scripts ?? []).flatMap((script) => script.js ?? []),
   "src/popup/popup.js",
   "src/popup/popup.css",
 ];

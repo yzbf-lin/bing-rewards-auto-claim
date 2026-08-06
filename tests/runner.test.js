@@ -14,7 +14,7 @@ function makeStorage(initialState = {}) {
       return Object.fromEntries(names.map((name) => [name, state[name]]));
     },
     async set(value) {
-      writes.push(value);
+      writes.push(structuredClone(value));
       Object.assign(state, structuredClone(value));
     },
   };
@@ -60,6 +60,18 @@ test("executes eligible entries sequentially and records skipped entries", async
   assert.equal(run.status, "completed");
   assert.equal(
     storage.writes.some((write) => write.currentRun?.progress?.current === 3),
+    true,
+  );
+  assert.equal(
+    storage.writes.some((write) =>
+      write.currentRun?.currentStep?.title === "浏览推荐" &&
+      write.currentRun.currentStep.status === "running"),
+    true,
+  );
+  assert.equal(
+    storage.writes.some((write) =>
+      write.currentRun?.currentStep?.title === "领取奖励" &&
+      write.currentRun.currentStep.status === "completed"),
     true,
   );
   assert.equal(storage.writes.at(-1).lastRun.status, "completed");

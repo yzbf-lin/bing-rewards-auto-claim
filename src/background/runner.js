@@ -25,6 +25,11 @@ export function createClaimRunner({
       finishedAt: null,
       phase: "collecting",
       progress: null,
+      currentStep: {
+        title: "正在识别积分入口",
+        section: "任务识别",
+        status: "running",
+      },
       results: [],
       summary: { total: 0, completed: 0, skipped: 0, failed: 0 },
     };
@@ -52,6 +57,13 @@ export function createClaimRunner({
       });
       run.phase = "executing";
       run.progress = { current: 0, total: catalog.entries?.length ?? 0 };
+      run.currentStep = {
+        title: `已识别 ${run.progress.total} 个积分入口`,
+        section: "任务识别",
+        status: "completed",
+        index: 0,
+        total: run.progress.total,
+      };
 
       for (const section of catalog.missingSections ?? []) {
         run.results.push({
@@ -68,6 +80,15 @@ export function createClaimRunner({
       await storage.set({ currentRun: run });
 
       for (const [entryIndex, entry] of (catalog.entries ?? []).entries()) {
+        run.currentStep = {
+          title: entry.title || "未命名入口",
+          section: entry.section || "积分任务",
+          status: "running",
+          index: entryIndex + 1,
+          total: run.progress.total,
+        };
+        await storage.set({ currentRun: run });
+
         const recognition = classifyEntry(entry);
         const previous = taskMemory[taskMemoryKey(entry)];
         const decision =
@@ -92,6 +113,7 @@ export function createClaimRunner({
           run.results.push(result);
           recordTask(entry, recognition, result.outcome);
           logger.warn("[Rewards Auto Claim] SKIPPED", result);
+          run.currentStep.status = "skipped";
           run.progress.current = entryIndex + 1;
           run.summary = summarizeResults(run.results);
           await storage.set({ currentRun: run, taskMemory });
@@ -114,6 +136,7 @@ export function createClaimRunner({
           run.results.push(result);
           recordTask(entry, recognition, result.outcome);
           logger.info("[Rewards Auto Claim] COMPLETED", result);
+          run.currentStep.status = "completed";
         } catch (error) {
           const result = {
             ...entry,
@@ -126,6 +149,7 @@ export function createClaimRunner({
           run.results.push(result);
           recordTask(entry, recognition, result.outcome);
           logger.error("[Rewards Auto Claim] FAILED", result);
+          run.currentStep.status = "failed";
         }
 
         run.progress.current = entryIndex + 1;
@@ -137,6 +161,11 @@ export function createClaimRunner({
     } catch (error) {
       run.status = "aborted";
       run.phase = "failed";
+      run.currentStep = {
+        title: "执行过程已中断",
+        section: "运行状态",
+        status: "failed",
+      };
       const result = {
         scope: "page",
         title: "积分页面",
@@ -146,6 +175,7 @@ export function createClaimRunner({
       };
       run.results.push(result);
       logger.error("[Rewards Auto Claim] ABORTED", result);
+      await storage.set({ currentRun: run, taskMemory });
     } finally {
       try {
         await driver.cleanup();
@@ -156,6 +186,11 @@ export function createClaimRunner({
 
     run.finishedAt = now().toISOString();
     run.phase = "finished";
+    run.currentStep = {
+      title: run.status === "completed" ? "全部步骤处理完成" : "执行过程已中断",
+      section: "运行状态",
+      status: run.status === "completed" ? "completed" : "failed",
+    };
     run.summary = summarizeResults(run.results);
     const finalState = { currentRun: null, lastRun: run, taskMemory };
     if (trigger !== "manual") {
