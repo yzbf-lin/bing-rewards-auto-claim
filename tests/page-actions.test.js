@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   activateRewardsButton,
   collectDashboardEntries,
+  collectQuestEntries,
   collectRewardsEntries,
 } from "../src/content/page-actions.js";
 
@@ -250,6 +251,42 @@ test("collects a positive claimable-points button", () => {
   assert.equal(result.entries[0].section, "待领取积分");
   assert.equal(result.entries[0].kind, "button");
   assert.equal(result.entries[0].action, "claim-points");
+});
+
+test("collects enabled and disabled one-click quest steps", () => {
+  const enabled = card({
+    text: "探索八月优惠",
+    href: "https://www.bing.com/search?q=offers&rnoreward=1",
+  });
+  enabled.getAttribute = (name) => name === "aria-label"
+    ? "探索八月优惠，点击即可完成"
+    : name === "href"
+      ? enabled.href
+      : null;
+  const disabled = card({
+    text: "浏览背包",
+    href: "https://www.bing.com/search?q=backpack&rnoreward=1",
+  });
+  disabled.getAttribute = (name) => name === "aria-disabled"
+    ? "true"
+    : name === "href"
+      ? disabled.href
+      : null;
+  const external = card({ text: "外部任务", href: "https://example.com/task" });
+  installDocument([]);
+  document.querySelector = (selector) => selector === "main"
+    ? { querySelectorAll: () => [enabled, disabled, external] }
+    : null;
+  globalThis.location = { href: "https://rewards.bing.com/earn/quest/example" };
+
+  const result = collectQuestEntries("八月活动");
+
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.entries[0].action, "quest-step");
+  assert.equal(result.entries[0].section, "任务：八月活动");
+  assert.equal(result.entries[0].disabled, false);
+  assert.equal(result.entries[1].disabled, true);
+  delete globalThis.location;
 });
 
 test("confirms the claim-points dialog after activating its card", async () => {

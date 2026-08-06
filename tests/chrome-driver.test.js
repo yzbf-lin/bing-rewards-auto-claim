@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 
 import { createChromeDriver } from "../src/background/chrome-driver.js";
 
-function chromeFake(catalog, dashboardCatalog = { missingSections: [], entries: [] }) {
+function chromeFake(
+  catalog,
+  dashboardCatalog = { missingSections: [], entries: [] },
+  questCatalog = { missingSections: [], entries: [] },
+) {
   let nextId = 1;
   const tabs = new Map();
   const removed = [];
@@ -49,6 +53,9 @@ function chromeFake(catalog, dashboardCatalog = { missingSections: [], entries: 
           }
           if (options.func.name === "collectDashboardEntries") {
             return [{ result: structuredClone(dashboardCatalog) }];
+          }
+          if (options.func.name === "collectQuestEntries") {
+            return [{ result: structuredClone(questCatalog) }];
           }
           if (options.func.name === "activateRewardsButton") {
             return [{ result: true }];
@@ -113,6 +120,51 @@ test("merges quick dashboard links into the catalog", async () => {
     },
   ]);
   assert.deepEqual(fake.removed, [1, 2]);
+});
+
+test("expands earn quest parents into one-click child tasks", async () => {
+  const questParent = {
+    id: "reward-entry-2-0",
+    section: "任务",
+    title: "八月活动",
+    text: "八月活动 +50 1/4 个任务",
+    kind: "link",
+    url: "https://rewards.bing.com/earn/quest/monthly",
+    disabled: false,
+  };
+  const questStep = {
+    id: "quest-entry-0",
+    section: "任务：八月活动",
+    parentTitle: "八月活动",
+    title: "探索八月优惠",
+    text: "探索八月优惠，点击即可完成",
+    kind: "link",
+    url: "https://www.bing.com/search?q=offers&rnoreward=1",
+    disabled: false,
+    action: "quest-step",
+  };
+  const fake = chromeFake(
+    { missingSections: [], entries: [questParent] },
+    { missingSections: [], entries: [] },
+    { missingSections: [], entries: [questStep] },
+  );
+  const driver = createChromeDriver({
+    chromeApi: fake.api,
+    delay: async () => {},
+    catalogAttempts: 3,
+  });
+
+  const catalog = await driver.loadCatalog();
+
+  assert.equal(catalog.entries.length, 2);
+  assert.deepEqual(catalog.entries[1], {
+    ...questStep,
+    source: "quest",
+    sourceUrl: questParent.url,
+  });
+  assert.deepEqual(fake.updates, [
+    { tabId: 1, options: { url: questParent.url, active: false } },
+  ]);
 });
 
 test("opens a link in the background and closes it after load", async () => {

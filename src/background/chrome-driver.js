@@ -1,6 +1,7 @@
 import {
   activateRewardsButton,
   collectDashboardEntries,
+  collectQuestEntries,
   collectRewardsEntries,
 } from "../content/page-actions.js";
 
@@ -80,7 +81,7 @@ export function createChromeDriver({
       .catch((error) => finish(reject, error));
   });
 
-  const navigateExistingTab = async (tabId, url) => {
+  const navigateExistingTab = async (tabId, url, active = true) => {
     const currentTab = await chromeApi.tabs.get(tabId);
     if (currentTab.url === url) {
       return currentTab.status === "complete"
@@ -88,26 +89,27 @@ export function createChromeDriver({
         : waitForTabLoaded(tabId);
     }
 
-    await chromeApi.tabs.update(tabId, { url, active: true });
+    await chromeApi.tabs.update(tabId, { url, active });
     return waitForTabLoaded(tabId);
   };
 
-  const collectOnce = async (tabId, collector) => {
+  const collectOnce = async (tabId, collector, args = []) => {
     const results = await chromeApi.scripting.executeScript({
       target: { tabId },
       func: collector,
+      args,
     });
     const catalog = results?.[0]?.result;
     if (!catalog || !Array.isArray(catalog.entries)) throw new Error("CATALOG_UNAVAILABLE");
     return catalog;
   };
 
-  const collectStableCatalog = async (tabId, collector) => {
+  const collectStableCatalog = async (tabId, collector, args = []) => {
     let previousSignature = null;
     let latest = null;
 
     for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
-      latest = await collectOnce(tabId, collector);
+      latest = await collectOnce(tabId, collector, args);
       const signature = catalogSignature(latest);
       if (latest.missingSections.length === 0 && signature === previousSignature) return latest;
       previousSignature = signature;
@@ -137,6 +139,32 @@ export function createChromeDriver({
             })),
           );
           combined.missingSections.push(...catalog.missingSections);
+
+          if (source.key === "earn") {
+            const questParents = catalog.entries.filter((entry) =>
+              entry.kind === "link" && /\/earn\/quest\//i.test(entry.url ?? ""),
+            );
+            for (const quest of questParents) {
+              try {
+                await navigateExistingTab(sourceTab.id, quest.url, Boolean(targetTabId));
+                const questCatalog = await collectStableCatalog(
+                  sourceTab.id,
+                  collectQuestEntries,
+                  [quest.title],
+                );
+                combined.entries.push(
+                  ...questCatalog.entries.map((entry) => ({
+                    ...entry,
+                    source: "quest",
+                    sourceUrl: quest.url,
+                  })),
+                );
+                combined.missingSections.push(...questCatalog.missingSections);
+              } catch {
+                combined.missingSections.push(`任务子步骤：${quest.title}`);
+              }
+            }
+          }
         } finally {
           if (!targetTabId) await removeTab(sourceTab.id);
         }

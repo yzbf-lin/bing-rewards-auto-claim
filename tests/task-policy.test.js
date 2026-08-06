@@ -148,6 +148,24 @@ test("uses a daily-activity points badge when card text has no plus sign", () =>
   );
 });
 
+test("allows an enabled click-to-complete quest child", () => {
+  assert.deepEqual(
+    classifyEntry(entry({
+      section: "任务：八月活动",
+      title: "探索八月优惠",
+      text: "探索八月优惠，点击即可完成",
+      action: "quest-step",
+      rewardPoints: null,
+      url: "https://www.bing.com/search?q=offers&rnoreward=1",
+    })),
+    {
+      decision: "ELIGIBLE",
+      reason: "KNOWN_ONE_STEP_REWARD",
+      rewardPoints: null,
+    },
+  );
+});
+
 test("recognizes a positive claimable-points button", () => {
   assert.deepEqual(
     classifyEntry(entry({

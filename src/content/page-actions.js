@@ -169,6 +169,54 @@ export function collectDashboardEntries() {
   return { entries, missingSections: [] };
 }
 
+export function collectQuestEntries(parentTitle) {
+  const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+  const main = document.querySelector("main");
+  if (!main) return { entries: [], missingSections: [`任务子步骤：${parentTitle}`] };
+
+  const entries = [];
+  const links = Array.from(main.querySelectorAll("a[href]"));
+
+  links.forEach((element) => {
+    const url = element.href || element.getAttribute("href");
+    let trustedTaskLink = false;
+    try {
+      const parsed = new URL(url, location.href);
+      trustedTaskLink = parsed.protocol === "https:" &&
+        (parsed.hostname === "bing.com" || parsed.hostname.endsWith(".bing.com")) &&
+        !/^\/earn\/?$/i.test(parsed.pathname);
+    } catch {
+      trustedTaskLink = false;
+    }
+    if (!trustedTaskLink) return;
+
+    const text = normalize(element.innerText || element.textContent);
+    const ariaTitle = normalize(element.getAttribute("aria-label"));
+    const title = text || ariaTitle || `任务子步骤 ${entries.length + 1}`;
+    const disabled = Boolean(
+      element.hasAttribute("disabled") ||
+      element.getAttribute("aria-disabled") === "true" ||
+      element.getAttribute("data-disabled") === "true",
+    );
+    const id = `quest-entry-${entries.length}`;
+
+    element.setAttribute("data-rewards-auto-id", id);
+    entries.push({
+      id,
+      section: `任务：${parentTitle}`,
+      parentTitle,
+      title,
+      text: ariaTitle || text,
+      kind: "link",
+      url,
+      disabled,
+      action: "quest-step",
+    });
+  });
+
+  return { entries, missingSections: [] };
+}
+
 export async function activateRewardsButton(entryId) {
   const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
   if (!element || element.tagName !== "BUTTON") return false;

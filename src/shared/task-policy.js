@@ -35,6 +35,7 @@ function findRewardPoints(text) {
 }
 
 function isKnownOneStepReward(entry, rewardPoints) {
+  if (entry.action === "quest-step" && entry.kind === "link") return true;
   if (rewardPoints === null) return false;
 
   if (entry.section === "待领取积分" && entry.kind === "button") return true;
