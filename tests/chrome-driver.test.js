@@ -1,0 +1,198 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { createChromeDriver } from "../src/background/chrome-driver.js";
+
+function chromeFake(catalog, dashboardCatalog = { missingSections: [], entries: [] }) {
+  let nextId = 1;
+  const tabs = new Map();
+  const removed = [];
+  const updates = [];
+  const emptyEvent = { addListener() {}, removeListener() {} };
+
+  return {
+    removed,
+    updates,
+    seedTab(tab) {
+      tabs.set(tab.id, { status: "complete", ...tab });
+    },
+    api: {
+      tabs: {
+        onUpdated: emptyEvent,
+        onRemoved: emptyEvent,
+        onCreated: emptyEvent,
+        async create(options) {
+          const tab = { id: nextId++, status: "complete", url: options.url };
+          tabs.set(tab.id, tab);
+          return tab;
+        },
+        async get(tabId) {
+          if (!tabs.has(tabId)) throw new Error("missing tab");
+          return tabs.get(tabId);
+        },
+        async update(tabId, options) {
+          if (!tabs.has(tabId)) throw new Error("missing tab");
+          const tab = { ...tabs.get(tabId), ...options, status: "complete" };
+          tabs.set(tabId, tab);
+          updates.push({ tabId, options });
+          return tab;
+        },
+        async remove(tabId) {
+          removed.push(tabId);
+          tabs.delete(tabId);
+        },
+      },
+      scripting: {
+        async executeScript(options) {
+          if (options.func.name === "collectRewardsEntries") {
+            return [{ result: structuredClone(catalog) }];
+          }
+          if (options.func.name === "collectDashboardEntries") {
+            return [{ result: structuredClone(dashboardCatalog) }];
+          }
+          if (options.func.name === "activateRewardsButton") {
+            return [{ result: true }];
+          }
+          throw new Error(`unexpected function ${options.func.name}`);
+        },
+      },
+    },
+  };
+}
+
+test("loads a stable catalog and closes the source tab", async () => {
+  const catalog = {
+    missingSections: [],
+    entries: [{ id: "reward-entry-3-0", section: "日常任务", title: "奖励", text: "奖励 +5", kind: "link", url: "https://example.com", disabled: false }],
+  };
+  const fake = chromeFake(catalog);
+  const driver = createChromeDriver({
+    chromeApi: fake.api,
+    delay: async () => {},
+    catalogAttempts: 3,
+  });
+
+  assert.deepEqual(await driver.loadCatalog(), {
+    missingSections: [],
+    entries: [
+      {
+        ...catalog.entries[0],
+        source: "earn",
+        sourceUrl: "https://rewards.bing.com/earn",
+      },
+    ],
+  });
+  assert.deepEqual(fake.removed, [1, 2]);
+});
+
+test("merges quick dashboard links into the catalog", async () => {
+  const dashboardEntry = {
+    id: "dashboard-entry-0",
+    section: "积分首页",
+    title: "解码历史",
+    text: "解码历史 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=egypt&rnoreward=1",
+    disabled: false,
+  };
+  const fake = chromeFake(
+    { missingSections: [], entries: [] },
+    { missingSections: [], entries: [dashboardEntry] },
+  );
+  const driver = createChromeDriver({
+    chromeApi: fake.api,
+    delay: async () => {},
+    catalogAttempts: 3,
+  });
+
+  assert.deepEqual((await driver.loadCatalog()).entries, [
+    {
+      ...dashboardEntry,
+      source: "dashboard",
+      sourceUrl: "https://rewards.bing.com/dashboard?section=dailyset",
+    },
+  ]);
+  assert.deepEqual(fake.removed, [1, 2]);
+});
+
+test("opens a link in the background and closes it after load", async () => {
+  const fake = chromeFake({ missingSections: [], entries: [] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeLink({ url: "https://example.com/reward" });
+
+  assert.equal(result.finalUrl, "https://example.com/reward");
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("loads catalogs and opens links in the supplied current tab", async () => {
+  const dashboardEntry = {
+    id: "dashboard-entry-0",
+    section: "积分首页",
+    title: "解码历史",
+    text: "解码历史 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=egypt&rnoreward=1",
+    disabled: false,
+  };
+  const fake = chromeFake(
+    { missingSections: [], entries: [] },
+    { missingSections: [], entries: [dashboardEntry] },
+  );
+  fake.seedTab({ id: 99, url: "https://example.com/start" });
+  const driver = createChromeDriver({
+    chromeApi: fake.api,
+    delay: async () => {},
+    catalogAttempts: 3,
+  });
+
+  const catalog = await driver.loadCatalog({ targetTabId: 99 });
+  const result = await driver.executeLink(catalog.entries[0], { targetTabId: 99 });
+
+  assert.deepEqual(fake.updates, [
+    { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
+    { tabId: 99, options: { url: "https://rewards.bing.com/dashboard?section=dailyset", active: true } },
+    { tabId: 99, options: { url: dashboardEntry.url, active: true } },
+  ]);
+  assert.equal(result.finalUrl, dashboardEntry.url);
+  assert.deepEqual(fake.removed, []);
+});
+
+test("re-collects and activates a unique button", async () => {
+  const entry = { id: "reward-entry-3-0", section: "日常任务", title: "奖励", text: "奖励 +5", kind: "button", url: null, disabled: false };
+  const fake = chromeFake({ missingSections: [], entries: [entry] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeButton(entry);
+
+  assert.equal(result.finalUrl, "https://rewards.bing.com/earn");
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("re-collects and activates a button in the supplied current tab", async () => {
+  const entry = { id: "reward-entry-3-0", section: "日常任务", title: "奖励", text: "奖励 +5", kind: "button", url: null, disabled: false };
+  const fake = chromeFake({ missingSections: [], entries: [entry] });
+  fake.seedTab({ id: 99, url: "https://example.com/start" });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeButton(entry, { targetTabId: 99 });
+
+  assert.equal(result.finalUrl, "https://rewards.bing.com/earn");
+  assert.deepEqual(fake.updates, [
+    { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
+  ]);
+  assert.deepEqual(fake.removed, []);
+});
+
+test("does not wait for a navigation when the current tab already has the button source", async () => {
+  const entry = { id: "reward-entry-3-0", section: "日常任务", title: "奖励", text: "奖励 +5", kind: "button", url: null, disabled: false };
+  const fake = chromeFake({ missingSections: [], entries: [entry] });
+  fake.seedTab({ id: 99, url: "https://rewards.bing.com/earn" });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeButton(entry, { targetTabId: 99 });
+
+  assert.equal(result.finalUrl, "https://rewards.bing.com/earn");
+  assert.deepEqual(fake.updates, []);
+  assert.deepEqual(fake.removed, []);
+});

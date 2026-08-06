@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>积分自动领取</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div>
+          <p class="eyebrow">BING REWARDS</p>
+          <h1>简单积分领取</h1>
+        </div>
+        <span id="status-badge" class="status-badge">尚未运行</span>
+      </header>
+
+      <section class="schedule" aria-label="自动执行计划">
+        <span>每日自动执行</span>
+        <strong>北京时间 09:00</strong>
+      </section>
+
+      <button id="run-button" class="primary-button" type="button">立即领取</button>
+      <p id="feedback" class="feedback" role="status" aria-live="polite"></p>
+
+      <section class="summary" aria-label="最近一次领取结果">
+        <div>
+          <p class="section-label">最近结果</p>
+          <p id="summary-text" class="summary-text">完成 0 · 跳过 0 · 失败 0</p>
+          <p id="memory-text" class="finished-at">已识别 0 个任务入口</p>
+        </div>
+        <time id="finished-at" class="finished-at"></time>
+      </section>
+
+      <div id="result-groups" class="result-groups"></div>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

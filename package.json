@@ -1,0 +1,11 @@
+{
+  "name": "bing-rewards-simple-auto-claim",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "validate": "node scripts/validate-extension.mjs",
+    "package": "bash scripts/package-extension.sh"
+  }
+}

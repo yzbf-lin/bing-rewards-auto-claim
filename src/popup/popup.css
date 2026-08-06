@@ -1,0 +1,162 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "Segoe UI", "PingFang SC", sans-serif;
+  background: #f5f7fa;
+  color: #162033;
+}
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  min-height: 420px;
+  margin: 0;
+  background: #f5f7fa;
+}
+
+.app {
+  padding: 20px;
+}
+
+.header,
+.schedule,
+.summary,
+.result-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eyebrow,
+.section-label {
+  margin: 0 0 4px;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.status-badge {
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fff;
+  color: #475467;
+  font-size: 12px;
+}
+
+.schedule,
+.summary {
+  margin-top: 18px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fff;
+  font-size: 13px;
+}
+
+.primary-button {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: #175cd3;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #1849a9;
+}
+
+.primary-button:focus-visible {
+  outline: 3px solid #84adff;
+  outline-offset: 2px;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.feedback {
+  min-height: 18px;
+  margin: 8px 2px 0;
+  color: #475467;
+  font-size: 12px;
+}
+
+.summary-text,
+.finished-at {
+  margin: 0;
+  font-size: 13px;
+}
+
+.finished-at {
+  color: #667085;
+  font-size: 11px;
+}
+
+.result-groups {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.result-group h2 {
+  margin: 0 0 8px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.result-list {
+  display: grid;
+  gap: 8px;
+}
+
+.result-item {
+  align-items: flex-start;
+  border-left: 3px solid #98a2b3;
+  padding: 9px 10px;
+  background: #fff;
+}
+
+.result-item[data-outcome="COMPLETED"] {
+  border-left-color: #079455;
+}
+
+.result-item[data-outcome="FAILED"] {
+  border-left-color: #d92d20;
+}
+
+.result-title,
+.result-reason {
+  margin: 0;
+  font-size: 12px;
+}
+
+.result-title {
+  font-weight: 650;
+}
+
+.result-reason {
+  margin-top: 3px;
+  color: #667085;
+}
+
+.outcome {
+  flex: none;
+  color: #475467;
+  font-size: 11px;
+}
