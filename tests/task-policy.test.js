@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyEntry } from "../src/shared/task-policy.js";
+import { analyzeEntryFeatures, classifyEntry } from "../src/shared/task-policy.js";
 
 function entry(overrides = {}) {
   return {
@@ -100,7 +100,7 @@ test("recognizes a dashboard one-click topic while keeping normal searches skipp
     })),
     {
       decision: "ELIGIBLE",
-      reason: "KNOWN_ONE_STEP_REWARD",
+      reason: "FEATURE_MATCHED_ONE_STEP",
       rewardPoints: 10,
     },
   );
@@ -113,6 +113,53 @@ test("recognizes a dashboard one-click topic while keeping normal searches skipp
     })).reason,
     "COMPLEX_TASK",
   );
+});
+
+test("recognizes an unseen one-step task from page features", () => {
+  const candidate = entry({
+    source: "earn",
+    section: "日常任务",
+    title: "全新主题活动",
+    text: "全新主题活动 +8",
+    url: "https://rewards.bing.com/promo/new-topic",
+    signals: {
+      opensNewTab: true,
+      hasProgress: false,
+      hasRewardBadge: true,
+      clickOnlyCue: false,
+      completed: false,
+    },
+  });
+
+  const features = analyzeEntryFeatures(candidate);
+  assert.equal(features.genericOneStep, true);
+  assert.ok(features.confidence >= 70);
+  assert.deepEqual(classifyEntry(candidate), {
+    decision: "ELIGIBLE",
+    reason: "FEATURE_MATCHED_ONE_STEP",
+    rewardPoints: 8,
+  });
+});
+
+test("keeps a progress task out of generic one-step recognition", () => {
+  const candidate = entry({
+    source: "earn",
+    section: "任务",
+    title: "全新系列任务",
+    text: "全新系列任务 +50 1/4 个任务",
+    url: "https://rewards.bing.com/promo/new-series",
+    signals: {
+      opensNewTab: true,
+      hasProgress: true,
+      hasRewardBadge: true,
+      clickOnlyCue: false,
+      completed: false,
+    },
+  });
+
+  const features = analyzeEntryFeatures(candidate);
+  assert.equal(features.genericOneStep, false);
+  assert.equal(classifyEntry(candidate).reason, "COMPLEX_TASK");
 });
 
 test("recognizes every enabled daily-activity link as one-click", () => {
@@ -144,6 +191,22 @@ test("uses a daily-activity points badge when card text has no plus sign", () =>
       decision: "ELIGIBLE",
       reason: "KNOWN_ONE_STEP_REWARD",
       rewardPoints: 10,
+    },
+  );
+});
+
+test("skips a daily-activity link without a points signal", () => {
+  assert.deepEqual(
+    classifyEntry(entry({
+      section: "每日活动",
+      title: "免费专属壁纸",
+      text: "免费专属壁纸",
+      url: "https://www.bing.com/apps/wallpaper",
+    })),
+    {
+      decision: "SKIPPED",
+      reason: "NO_REWARD_SIGNAL",
+      rewardPoints: null,
     },
   );
 });

@@ -6,6 +6,7 @@ const OUTCOME_LABELS = {
 
 const REASON_LABELS = {
   ACTION_TRIGGERED: "已触发领取动作",
+  FEATURE_MATCHED_ONE_STEP: "根据页面特征识别为单步任务",
   ALREADY_TRIGGERED_TODAY: "今天已经触发过",
   COMPLEX_TASK: "需要继续交互",
   COMPLETED: "此前已经完成",

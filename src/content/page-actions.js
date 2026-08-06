@@ -59,6 +59,9 @@ export function collectRewardsEntries() {
       const ariaTitle = normalize(element.getAttribute("aria-label"));
       const title = imageTitle || paragraphTitle || ariaTitle || text.slice(0, 80) || "未命名入口";
       const restrictionText = /需要.+级别|等级不足|level required/i.test(text);
+      const url = element.tagName === "A" ? element.href || element.getAttribute("href") : null;
+      const paragraphTexts = Array.from(element.querySelectorAll("p"))
+        .map((paragraph) => normalize(paragraph.textContent));
       const disabled = Boolean(
         element.disabled ||
           element.hasAttribute("disabled") ||
@@ -73,8 +76,17 @@ export function collectRewardsEntries() {
         title,
         text,
         kind: element.tagName === "A" ? "link" : "button",
-        url: element.tagName === "A" ? element.href || element.getAttribute("href") : null,
+        url,
         disabled,
+        signals: {
+          opensNewTab: element.getAttribute("target") === "_blank",
+          hasProgress: /\d+\s*\/\s*\d+/.test(text),
+          hasRewardBadge: paragraphTexts.some((value) => /^\+\s*[\d,]+/.test(value)),
+          clickOnlyCue:
+            /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
+            /[?&]rnoreward=1(?:&|$)/i.test(url ?? ""),
+          completed: /已完成|已领取|completed|claimed/i.test(text),
+        },
       });
     });
   });
@@ -163,6 +175,15 @@ export function collectDashboardEntries() {
       disabled,
       action: claimablePoints > 0 ? "claim-points" : null,
       rewardPoints: detectedRewardPoints,
+      signals: {
+        opensNewTab: element.getAttribute("target") === "_blank",
+        hasProgress: /\d+\s*\/\s*\d+/.test(text),
+        hasRewardBadge: explicitReward || detectedRewardPoints !== null,
+        clickOnlyCue:
+          /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
+          /[?&]rnoreward=1(?:&|$)/i.test(element.href ?? ""),
+        completed: /已完成|已领取|completed|claimed/i.test(text),
+      },
     });
   });
 
@@ -211,6 +232,15 @@ export function collectQuestEntries(parentTitle) {
       url,
       disabled,
       action: "quest-step",
+      signals: {
+        opensNewTab: element.getAttribute("target") === "_blank",
+        hasProgress: /\d+\s*\/\s*\d+/.test(ariaTitle || text),
+        hasRewardBadge: false,
+        clickOnlyCue:
+          /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(ariaTitle || text) ||
+          /[?&]rnoreward=1(?:&|$)/i.test(url),
+        completed: /已完成|已领取|completed|claimed/i.test(ariaTitle || text),
+      },
     });
   });
 

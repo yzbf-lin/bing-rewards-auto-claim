@@ -94,6 +94,10 @@ function installDocument(groups, headings = SECTION_NAMES, labelElements = {}) {
 
 test("collects top-level cards from all four Rewards sections", () => {
   const dailyLink = card({ href: "https://example.com/daily" });
+  dailyLink.setAttribute("target", "_blank");
+  dailyLink.querySelectorAll = (selector) => selector === "p"
+    ? [{ textContent: "领取奖励" }, { textContent: "+5" }]
+    : [];
   const dailyButton = card({ tagName: "BUTTON", text: "领取 +10" });
   const groups = SECTION_NAMES.map((name) =>
     group(name, name === "日常任务" ? [dailyLink, dailyButton] : []),
@@ -107,6 +111,8 @@ test("collects top-level cards from all four Rewards sections", () => {
   assert.deepEqual(result.entries.map((item) => item.kind), ["link", "button"]);
   assert.equal(result.entries[0].section, "日常任务");
   assert.equal(result.entries[0].url, "https://example.com/daily");
+  assert.equal(result.entries[0].signals.opensNewTab, true);
+  assert.equal(result.entries[0].signals.hasRewardBadge, true);
   assert.match(result.entries[0].id, /^reward-entry-/);
 });
 
@@ -285,6 +291,7 @@ test("collects enabled and disabled one-click quest steps", () => {
   assert.equal(result.entries[0].action, "quest-step");
   assert.equal(result.entries[0].section, "任务：八月活动");
   assert.equal(result.entries[0].disabled, false);
+  assert.equal(result.entries[0].signals.clickOnlyCue, true);
   assert.equal(result.entries[1].disabled, true);
   delete globalThis.location;
 });

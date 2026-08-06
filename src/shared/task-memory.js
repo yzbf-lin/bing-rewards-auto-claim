@@ -47,6 +47,7 @@ export function rememberTask(memory, {
       rewardPoints: decision.rewardPoints,
       recognitionDecision: decision.decision,
       recognitionReason: decision.reason,
+      recognitionSignals: entry.signals ?? previous.recognitionSignals ?? null,
       lastOutcome: outcome,
       lastSeenAt: observedAt,
       lastSeenDate: dateKey,

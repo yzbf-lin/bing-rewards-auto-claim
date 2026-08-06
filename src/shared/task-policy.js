@@ -1,5 +1,5 @@
 const COMPLEX_TASK_PATTERNS = [
-  /搜索|search/i,
+  /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
   /答题|测验|quiz|trivia/i,
   /拼图|puzzle/i,
   /投票|poll/i,
@@ -13,6 +13,8 @@ const COMPLEX_TASK_PATTERNS = [
 ];
 
 const COMPLETED_PATTERN = /已完成|已领取|completed|claimed/i;
+const CLICK_ONLY_PATTERN = /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)|click.{0,12}(?:complete|earn|view)/i;
+const PROGRESS_PATTERN = /\d+\s*\/\s*\d+/;
 const SUPPORTED_KINDS = new Set(["link", "button"]);
 
 function normalize(value) {
@@ -34,24 +36,17 @@ function findRewardPoints(text) {
   return pointsMatch ? Number(pointsMatch[1].replaceAll(",", "")) : null;
 }
 
-function isKnownOneStepReward(entry, rewardPoints) {
-  if (entry.action === "quest-step" && entry.kind === "link") return true;
-  if (rewardPoints === null) return false;
-
-  if (entry.section === "待领取积分" && entry.kind === "button") return true;
-  if (entry.section === "每日活动" && entry.kind === "link") return true;
-  if (entry.kind !== "link") return false;
-
-  const url = normalize(entry.url);
-  const fromDashboard = entry.source === "dashboard" || entry.section === "积分首页";
-  return (
-    fromDashboard &&
-    /^https:\/\/www\.bing\.com\/search\?/i.test(url) &&
-    /[?&]rnoreward=1(?:&|$)/i.test(url)
-  );
+function isTrustedDestination(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      (url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"));
+  } catch {
+    return false;
+  }
 }
 
-export function classifyEntry(entry) {
+export function analyzeEntryFeatures(entry) {
   const title = normalize(entry.title);
   const text = normalize(entry.text);
   const url = normalize(entry.url);
@@ -60,24 +55,82 @@ export function classifyEntry(entry) {
   const rewardPoints = Number.isFinite(declaredRewardPoints) && declaredRewardPoints > 0
     ? declaredRewardPoints
     : findRewardPoints(`${title} ${text}`);
+  const signals = entry.signals ?? {};
+  const supported = SUPPORTED_KINDS.has(entry.kind);
+  const navigationOnly = entry.kind === "link";
+  const trustedDestination = navigationOnly && isTrustedDestination(url);
+  const completed = signals.completed ?? COMPLETED_PATTERN.test(searchable);
+  const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
+  const clickOnlyCue = signals.clickOnlyCue ?? (
+    CLICK_ONLY_PATTERN.test(searchable) || /[?&]rnoreward=1(?:&|$)/i.test(url)
+  );
+  const hasRewardSignal = signals.hasRewardBadge === true || rewardPoints !== null;
+  const opensNewTab = signals.opensNewTab === true;
+  const complex = COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
+  const declaredOneStep =
+    (entry.action === "quest-step" && navigationOnly) ||
+    (hasRewardSignal && entry.section === "待领取积分" && entry.kind === "button") ||
+    (hasRewardSignal && entry.section === "每日活动" && navigationOnly);
+
+  let confidence = 0;
+  if (supported) confidence += 10;
+  if (!entry.disabled && !completed) confidence += 10;
+  if (navigationOnly) confidence += 30;
+  if (trustedDestination) confidence += 25;
+  if (hasRewardSignal) confidence += 20;
+  if (opensNewTab) confidence += 15;
+  if (clickOnlyCue) confidence += 20;
+  if (hasProgress) confidence -= 50;
+  if (complex) confidence -= 50;
+  if (declaredOneStep && !entry.disabled && !completed) confidence = Math.max(confidence, 90);
+
+  return {
+    rewardPoints,
+    supported,
+    completed,
+    hasProgress,
+    clickOnlyCue,
+    hasRewardSignal,
+    navigationOnly,
+    trustedDestination,
+    opensNewTab,
+    complex,
+    declaredOneStep,
+    confidence,
+    genericOneStep:
+      confidence >= 70 &&
+      !hasProgress &&
+      !complex &&
+      (hasRewardSignal || clickOnlyCue) &&
+      (!navigationOnly || trustedDestination),
+  };
+}
+
+export function classifyEntry(entry) {
+  const features = analyzeEntryFeatures(entry);
+  const { rewardPoints } = features;
 
   if (entry.disabled) {
     return { decision: "SKIPPED", reason: "DISABLED", rewardPoints };
   }
 
-  if (COMPLETED_PATTERN.test(searchable)) {
+  if (features.completed) {
     return { decision: "SKIPPED", reason: "COMPLETED", rewardPoints };
   }
 
-  if (!SUPPORTED_KINDS.has(entry.kind)) {
+  if (!features.supported) {
     return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
   }
 
-  if (isKnownOneStepReward(entry, rewardPoints)) {
+  if (features.declaredOneStep) {
     return { decision: "ELIGIBLE", reason: "KNOWN_ONE_STEP_REWARD", rewardPoints };
   }
 
-  if (COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable))) {
+  if (features.genericOneStep) {
+    return { decision: "ELIGIBLE", reason: "FEATURE_MATCHED_ONE_STEP", rewardPoints };
+  }
+
+  if (features.complex || features.hasProgress) {
     return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
   }
 

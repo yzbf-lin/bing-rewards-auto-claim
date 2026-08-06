@@ -9,6 +9,11 @@ const entry = {
   text: "解码历史 +10",
   kind: "link",
   url: "https://www.bing.com/search?q=egypt&form=ML2G76&rnoreward=1",
+  signals: {
+    opensNewTab: true,
+    hasRewardBadge: true,
+    hasProgress: false,
+  },
 };
 
 test("builds a stable key and records recognition history", () => {
@@ -33,4 +38,5 @@ test("builds a stable key and records recognition history", () => {
   assert.equal(second[key].lastOutcome, "SKIPPED");
   assert.equal(second[key].lastCompletedDate, "2026-08-06");
   assert.equal(second[key].recognitionReason, "KNOWN_ONE_STEP_REWARD");
+  assert.deepEqual(second[key].recognitionSignals, entry.signals);
 });
