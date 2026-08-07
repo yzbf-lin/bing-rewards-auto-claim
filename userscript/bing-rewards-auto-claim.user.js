@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.2
+// @version      0.3.3
 // @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
 // @author       yzbf-lin
 // @license      MIT
@@ -22,7 +22,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.2";
+  const VERSION = "0.3.3";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -167,10 +167,11 @@
       /[?&]form=dsetqu(?:&|$)|BingQA_QuizLanding/i.test(url);
     const complex = interactiveQuiz ||
       COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
+    const dailyActivityLink = hasRewardSignal && entry.section === "每日活动" && navigationOnly;
     const declaredOneStep =
       (entry.action === "quest-step" && navigationOnly) ||
       (hasRewardSignal && entry.section === "待领取积分" && entry.kind === "button") ||
-      (hasRewardSignal && entry.section === "每日活动" && navigationOnly);
+      dailyActivityLink;
 
     let confidence = 0;
     if (supported) confidence += 10;
@@ -191,6 +192,7 @@
       hasProgress,
       interactiveQuiz,
       complex,
+      dailyActivityLink,
       declaredOneStep,
       genericOneStep:
         confidence >= 70 &&
@@ -209,10 +211,10 @@
     if (!features.supported) {
       return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
     }
-    if (features.interactiveQuiz) {
+    if (features.interactiveQuiz && !features.dailyActivityLink) {
       return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
     }
-    if (features.complex || features.hasProgress) {
+    if ((features.complex && !features.dailyActivityLink) || features.hasProgress) {
       return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
     }
     if (features.declaredOneStep) {

@@ -184,7 +184,7 @@ test("keeps a progress task out of generic one-step recognition", () => {
   assert.equal(classifyEntry(candidate).reason, "COMPLEX_TASK");
 });
 
-test("skips an interactive daily-activity quiz", () => {
+test("allows a daily-activity quiz card that credits on the original click", () => {
   assert.deepEqual(
     classifyEntry(entry({
       section: "每日活动",
@@ -193,8 +193,8 @@ test("skips an interactive daily-activity quiz", () => {
       url: "https://www.bing.com/search?q=quiz",
     })),
     {
-      decision: "SKIPPED",
-      reason: "INTERACTIVE_QUIZ",
+      decision: "ELIGIBLE",
+      reason: "KNOWN_ONE_STEP_REWARD",
       rewardPoints: 10,
     },
   );
@@ -314,6 +314,18 @@ test("classifies the observed Rewards mix without skipping direct point links", 
   ]);
   assert.deepEqual(interactiveLinks.map((candidate) => classifyEntry(candidate).reason), [
     "COMPLEX_TASK",
-    "INTERACTIVE_QUIZ",
+    "KNOWN_ONE_STEP_REWARD",
   ]);
+});
+
+test("keeps a non-daily interactive quiz as a manual task", () => {
+  assert.equal(
+    classifyEntry(entry({
+      section: "任务",
+      title: "艺术知识测验",
+      text: "回答三道题 +10",
+      url: "https://www.bing.com/search?q=art&form=dsetqu",
+    })).reason,
+    "INTERACTIVE_QUIZ",
+  );
 });

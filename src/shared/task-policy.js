@@ -81,10 +81,11 @@ export function analyzeEntryFeatures(entry) {
     /[?&]form=dsetqu(?:&|$)|BingQA_QuizLanding/i.test(url);
   const complex = interactiveQuiz ||
     COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
+  const dailyActivityLink = hasRewardSignal && entry.section === "每日活动" && navigationOnly;
   const declaredOneStep =
     (entry.action === "quest-step" && navigationOnly) ||
     (hasRewardSignal && entry.section === "待领取积分" && entry.kind === "button") ||
-    (hasRewardSignal && entry.section === "每日活动" && navigationOnly);
+    dailyActivityLink;
 
   let confidence = 0;
   if (supported) confidence += 10;
@@ -110,6 +111,7 @@ export function analyzeEntryFeatures(entry) {
     opensNewTab,
     interactiveQuiz,
     complex,
+    dailyActivityLink,
     declaredOneStep,
     confidence,
     genericOneStep:
@@ -137,11 +139,11 @@ export function classifyEntry(entry) {
     return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
   }
 
-  if (features.interactiveQuiz) {
+  if (features.interactiveQuiz && !features.dailyActivityLink) {
     return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
   }
 
-  if (features.complex || features.hasProgress) {
+  if ((features.complex && !features.dailyActivityLink) || features.hasProgress) {
     return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
   }
 

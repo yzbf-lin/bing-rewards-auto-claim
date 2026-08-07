@@ -58,7 +58,7 @@ test("userscript recognizes fully completed visible progress", () => {
   assert.equal(api.inferCompleted("每日活动 活动: 2/3"), false);
 });
 
-test("userscript reports an explicit reason for an interactive quiz", () => {
+test("userscript clicks a daily-activity card even when its URL opens a quiz", () => {
   const api = loadApi();
   const result = api.classifyEntry({
     section: "每日活动",
@@ -66,6 +66,21 @@ test("userscript reports an explicit reason for an interactive quiz", () => {
     text: "测试你对弗里达·卡罗的了解 +10",
     kind: "link",
     url: "https://www.bing.com/search?q=Frida&form=dsetqu&filters=BingQA_QuizLanding_Layout",
+    disabled: false,
+  });
+
+  assert.equal(result.decision, "ELIGIBLE");
+  assert.equal(result.reason, "KNOWN_ONE_STEP_REWARD");
+});
+
+test("userscript keeps a non-daily interactive quiz as a manual task", () => {
+  const api = loadApi();
+  const result = api.classifyEntry({
+    section: "任务",
+    title: "艺术知识测验",
+    text: "回答三道题 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=art&form=dsetqu",
     disabled: false,
   });
 
