@@ -1,6 +1,6 @@
 {
   "name": "bing-rewards-simple-auto-claim",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "private": true,
   "type": "module",
   "scripts": {

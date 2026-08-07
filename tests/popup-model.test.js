@@ -5,12 +5,24 @@ import { buildPopupModel } from "../src/popup/model.js";
 
 test("shows an active run and disables manual execution", () => {
   const model = buildPopupModel({
-    currentRun: { status: "running", progress: { current: 1, total: 3 }, results: [] },
+    currentRun: {
+      status: "running",
+      progress: { current: 1, total: 3 },
+      currentStep: { title: "古代设计与建造", section: "每日活动", index: 2, total: 3 },
+      summary: { completed: 1, skipped: 0, failed: 0 },
+      results: [
+        { section: "每日活动", title: "温哥华清爽海岸", outcome: "COMPLETED", reason: "ACTION_TRIGGERED" },
+      ],
+    },
     lastRun: null,
   });
 
   assert.equal(model.statusLabel, "正在领取 1/3");
   assert.equal(model.actionDisabled, true);
+  assert.equal(model.currentStepTitle, "古代设计与建造");
+  assert.equal(model.currentStepMeta, "步骤 2/3 · 每日活动");
+  assert.equal(model.summaryText, "完成 1 · 跳过 0 · 失败 0");
+  assert.equal(model.groups[0].items.length, 1);
 });
 
 test("formats the latest summary and groups entry results", () => {

@@ -15,6 +15,11 @@ body {
   background: #f5f7fa;
 }
 
+body.embedded {
+  width: 100%;
+  min-height: 100%;
+}
+
 .app {
   padding: 20px;
 }
@@ -144,6 +149,26 @@ h1 {
   margin: 8px 2px 0;
   color: #475467;
   font-size: 12px;
+}
+
+.live-progress {
+  margin-top: 12px;
+  border: 1px solid #84adff;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #eff8ff;
+}
+
+.live-progress[hidden] {
+  display: none;
+}
+
+.live-progress-title {
+  margin: 0;
+  color: #1849a9;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .summary-text,

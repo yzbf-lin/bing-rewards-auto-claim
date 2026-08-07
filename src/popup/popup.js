@@ -12,8 +12,15 @@ const updateVersion = document.querySelector("#update-version");
 const updateFeedback = document.querySelector("#update-feedback");
 const downloadUpdate = document.querySelector("#download-update");
 const extensionVersion = document.querySelector("#extension-version");
+const liveProgress = document.querySelector("#live-progress");
+const liveProgressMeta = document.querySelector("#live-progress-meta");
+const liveProgressTitle = document.querySelector("#live-progress-title");
 let availableUpdate = null;
 
+document.body.classList.toggle(
+  "embedded",
+  new URLSearchParams(location.search).get("embedded") === "1",
+);
 extensionVersion.textContent = `v${chrome.runtime.getManifest().version}`;
 
 function resultItem(result) {
@@ -52,6 +59,9 @@ function render(model) {
       minute: "2-digit",
     }).format(new Date(model.finishedAt))
     : "";
+  liveProgress.hidden = !model.currentStepTitle;
+  liveProgressMeta.textContent = model.currentStepMeta || "";
+  liveProgressTitle.textContent = model.currentStepTitle || "";
   resultGroups.replaceChildren();
 
   for (const group of model.groups) {

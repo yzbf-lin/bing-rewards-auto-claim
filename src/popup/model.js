@@ -18,10 +18,11 @@ const REASON_LABELS = {
 
 export function buildPopupModel({ currentRun, lastRun, taskMemory }) {
   const active = currentRun?.status === "running";
-  const summary = lastRun?.summary ?? { completed: 0, skipped: 0, failed: 0 };
+  const displayRun = currentRun ?? lastRun;
+  const summary = displayRun?.summary ?? { completed: 0, skipped: 0, failed: 0 };
   const groupsBySection = new Map();
 
-  for (const result of lastRun?.results ?? []) {
+  for (const result of displayRun?.results ?? []) {
     const section = result.section || "运行信息";
     if (!groupsBySection.has(section)) groupsBySection.set(section, []);
     groupsBySection.get(section).push({
@@ -38,12 +39,20 @@ export function buildPopupModel({ currentRun, lastRun, taskMemory }) {
   else if (lastRun?.status === "completed") statusLabel = "上次领取已完成";
   else if (lastRun?.status === "aborted") statusLabel = "上次运行异常结束";
 
+  const step = currentRun?.currentStep;
+  const stepCurrent = step?.index ?? currentRun?.progress?.current ?? 0;
+  const stepTotal = step?.total ?? currentRun?.progress?.total ?? 0;
+
   return {
     statusLabel,
     actionDisabled: active,
     summaryText: `完成 ${summary.completed} · 跳过 ${summary.skipped} · 失败 ${summary.failed}`,
     memoryText: `已识别 ${Object.keys(taskMemory ?? {}).length} 个任务入口`,
-    finishedAt: lastRun?.finishedAt ?? null,
+    finishedAt: displayRun?.finishedAt ?? null,
+    currentStepTitle: active ? step?.title || "正在准备执行任务" : null,
+    currentStepMeta: active
+      ? `${stepTotal > 0 ? `步骤 ${stepCurrent}/${stepTotal} · ` : ""}${step?.section || "积分任务"}`
+      : null,
     groups: [...groupsBySection].map(([section, items]) => ({ section, items })),
   };
 }

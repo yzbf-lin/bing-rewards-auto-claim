@@ -3,13 +3,16 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const manifest = JSON.parse(await readFile(resolve(root, "manifest.json"), "utf8"));
-const requiredFiles = [
+const webAccessibleFiles = (manifest.web_accessible_resources ?? [])
+  .flatMap((entry) => entry.resources ?? []);
+const requiredFiles = [...new Set([
   manifest.background?.service_worker,
   manifest.action?.default_popup,
   ...(manifest.content_scripts ?? []).flatMap((script) => script.js ?? []),
   "src/popup/popup.js",
   "src/popup/popup.css",
-];
+  ...webAccessibleFiles,
+])];
 
 if (manifest.manifest_version !== 3) throw new Error("manifest_version must be 3");
 if (manifest.host_permissions?.includes("<all_urls>")) throw new Error("<all_urls> is not allowed");

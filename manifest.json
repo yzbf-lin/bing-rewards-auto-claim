@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bing Rewards 简单积分领取",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "每天识别、记录并执行一次即可完成的 Bing Rewards 积分入口。",
   "permissions": [
     "alarms",
@@ -23,6 +23,19 @@
         "src/content/progress-overlay.js"
       ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/popup/popup.html",
+        "src/popup/popup.css",
+        "src/popup/popup.js",
+        "src/popup/model.js"
+      ],
+      "matches": [
+        "https://*.bing.com/*"
+      ]
     }
   ],
   "background": {
