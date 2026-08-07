@@ -157,6 +157,23 @@ export function createClaimRunner({
         await storage.set({ currentRun: run, taskMemory });
       }
 
+      if (context.targetTabId && typeof driver.restore === "function") {
+        run.phase = "returning";
+        run.currentStep = {
+          title: "正在返回积分页面",
+          section: "运行状态",
+          status: "running",
+          index: run.progress.current,
+          total: run.progress.total,
+        };
+        await storage.set({ currentRun: run, taskMemory });
+        try {
+          await driver.restore(context);
+        } catch (error) {
+          logger.error("[Rewards Auto Claim] RESTORE_FAILED", serializeError(error));
+        }
+      }
+
       run.status = "completed";
     } catch (error) {
       run.status = "aborted";

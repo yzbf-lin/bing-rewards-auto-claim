@@ -102,8 +102,6 @@
   const skippedText = shadow.querySelector("#skipped");
   const failedText = shadow.querySelector("#failed");
   const recentList = shadow.querySelector("#recent");
-  let removalTimer = null;
-
   const outcomeIcon = {
     COMPLETED: "✓",
     SKIPPED: "−",
@@ -116,7 +114,6 @@
       return;
     }
 
-    clearTimeout(removalTimer);
     if (!host.isConnected) document.documentElement.append(host);
 
     const step = run.currentStep ?? {};
@@ -153,13 +150,14 @@
       recentList.append(item);
     }
 
-    if (finished) {
-      removalTimer = setTimeout(() => host.remove(), 6_000);
-    }
   }
 
-  chrome.storage.local.get("currentRun").then(({ currentRun }) => {
-    if (currentRun) render(currentRun);
+  chrome.storage.local.get(["currentRun", "lastRun"]).then(({ currentRun, lastRun }) => {
+    if (currentRun) {
+      render(currentRun);
+    } else if (lastRun) {
+      render(lastRun, true);
+    }
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {

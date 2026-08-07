@@ -162,7 +162,7 @@ test("keeps a progress task out of generic one-step recognition", () => {
   assert.equal(classifyEntry(candidate).reason, "COMPLEX_TASK");
 });
 
-test("recognizes every enabled daily-activity link as one-click", () => {
+test("skips an interactive daily-activity quiz", () => {
   assert.deepEqual(
     classifyEntry(entry({
       section: "每日活动",
@@ -171,8 +171,8 @@ test("recognizes every enabled daily-activity link as one-click", () => {
       url: "https://www.bing.com/search?q=quiz",
     })),
     {
-      decision: "ELIGIBLE",
-      reason: "KNOWN_ONE_STEP_REWARD",
+      decision: "SKIPPED",
+      reason: "COMPLEX_TASK",
       rewardPoints: 10,
     },
   );

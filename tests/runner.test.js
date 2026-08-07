@@ -203,6 +203,9 @@ test("passes the manual current-tab context to catalog and action operations", a
       calls.push(["link", receivedContext]);
       return { finalUrl: "https://rewards.bing.com/earn" };
     },
+    async restore(receivedContext) {
+      calls.push(["restore", receivedContext]);
+    },
     async cleanup() {},
   };
   const runner = createClaimRunner({
@@ -213,5 +216,9 @@ test("passes the manual current-tab context to catalog and action operations", a
 
   await runner.run("manual", context);
 
-  assert.deepEqual(calls, [["catalog", context], ["link", context]]);
+  assert.deepEqual(calls, [
+    ["catalog", context],
+    ["link", context],
+    ["restore", context],
+  ]);
 });

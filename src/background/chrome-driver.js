@@ -248,6 +248,11 @@ export function createChromeDriver({
       }
     },
 
+    async restore({ targetTabId } = {}) {
+      if (!targetTabId) return null;
+      return navigateExistingTab(targetTabId, REWARDS_URL);
+    },
+
     async cleanup() {
       const tabIds = [...createdTabs];
       await Promise.all(tabIds.map((tabId) => removeTab(tabId)));

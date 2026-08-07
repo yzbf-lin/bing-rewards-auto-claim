@@ -122,16 +122,16 @@ export function classifyEntry(entry) {
     return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
   }
 
+  if (features.complex || features.hasProgress) {
+    return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
+  }
+
   if (features.declaredOneStep) {
     return { decision: "ELIGIBLE", reason: "KNOWN_ONE_STEP_REWARD", rewardPoints };
   }
 
   if (features.genericOneStep) {
     return { decision: "ELIGIBLE", reason: "FEATURE_MATCHED_ONE_STEP", rewardPoints };
-  }
-
-  if (features.complex || features.hasProgress) {
-    return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
   }
 
   if (rewardPoints === null) {

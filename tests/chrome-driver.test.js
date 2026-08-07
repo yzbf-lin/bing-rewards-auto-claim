@@ -248,3 +248,15 @@ test("does not wait for a navigation when the current tab already has the button
   assert.deepEqual(fake.updates, []);
   assert.deepEqual(fake.removed, []);
 });
+
+test("restores the supplied current tab to the Rewards earn page", async () => {
+  const fake = chromeFake({ missingSections: [], entries: [] });
+  fake.seedTab({ id: 99, url: "https://www.bing.com/search?q=reward" });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  await driver.restore({ targetTabId: 99 });
+
+  assert.deepEqual(fake.updates, [
+    { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
+  ]);
+});

@@ -17,3 +17,13 @@ test("manifest uses minimal permissions and references existing files", async ()
   await access(new URL(`../${manifest.action.default_popup}`, import.meta.url));
   await access(new URL(`../${manifest.content_scripts[0].js[0]}`, import.meta.url));
 });
+
+test("progress overlay persists and restores the latest run after navigation", async () => {
+  const source = await readFile(
+    new URL("../src/content/progress-overlay.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /get\(\["currentRun", "lastRun"\]\)/);
+  assert.doesNotMatch(source, /setTimeout\(\(\) => host\.remove\(\)/);
+});
