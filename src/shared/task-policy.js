@@ -1,6 +1,6 @@
 const COMPLEX_TASK_PATTERNS = [
   /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
-  /答题|测验|quiz|trivia/i,
+  /答题|测验|trivia/i,
   /拼图|puzzle/i,
   /投票|poll/i,
   /购买|订阅|purchase|subscribe/i,
@@ -50,6 +50,7 @@ export function analyzeEntryFeatures(entry) {
   const title = normalize(entry.title);
   const text = normalize(entry.text);
   const url = normalize(entry.url);
+  const visibleContent = `${title} ${text}`;
   const searchable = `${title} ${text} ${url}`;
   const declaredRewardPoints = Number(entry.rewardPoints);
   const rewardPoints = Number.isFinite(declaredRewardPoints) && declaredRewardPoints > 0
@@ -66,7 +67,10 @@ export function analyzeEntryFeatures(entry) {
   );
   const hasRewardSignal = signals.hasRewardBadge === true || rewardPoints !== null;
   const opensNewTab = signals.opensNewTab === true;
-  const complex = COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
+  const interactiveQuiz = /\bquiz\b/i.test(visibleContent) ||
+    /[?&]form=dsetqu(?:&|$)|BingQA_QuizLanding/i.test(url);
+  const complex = interactiveQuiz ||
+    COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
   const declaredOneStep =
     (entry.action === "quest-step" && navigationOnly) ||
     (hasRewardSignal && entry.section === "待领取积分" && entry.kind === "button") ||

@@ -213,7 +213,7 @@ export function createClaimRunner({
     run.finishedAt = now().toISOString();
     run.phase = "finished";
     run.currentStep = {
-      title: run.status === "completed" ? "全部步骤处理完成" : "执行过程已中断",
+      title: run.status === "completed" ? "本轮任务检查完成" : "执行过程已中断",
       section: "运行状态",
       status: run.status === "completed" ? "completed" : "failed",
     };

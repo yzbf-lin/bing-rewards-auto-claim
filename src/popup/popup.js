@@ -11,7 +11,10 @@ const updateCard = document.querySelector("#update-card");
 const updateVersion = document.querySelector("#update-version");
 const updateFeedback = document.querySelector("#update-feedback");
 const downloadUpdate = document.querySelector("#download-update");
+const extensionVersion = document.querySelector("#extension-version");
 let availableUpdate = null;
+
+extensionVersion.textContent = `v${chrome.runtime.getManifest().version}`;
 
 function resultItem(result) {
   const item = document.createElement("div");

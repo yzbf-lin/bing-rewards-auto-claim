@@ -26,5 +26,7 @@ test("progress overlay persists and restores the latest run after navigation", a
 
   assert.match(source, /get\(\["currentRun", "lastRun"\]\)/);
   assert.match(source, /globalThis\[INSTANCE_KEY\] = \{ refresh \}/);
+  assert.match(source, /chrome\.runtime\.getManifest\(\)\.version/);
+  assert.match(source, /跳过原因/);
   assert.doesNotMatch(source, /setTimeout\(\(\) => host\.remove\(\)/);
 });

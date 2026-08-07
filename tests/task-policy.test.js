@@ -256,6 +256,13 @@ test("classifies the observed Rewards mix without skipping direct point links", 
       signals: { opensNewTab: true, hasRewardBadge: true },
     }),
     entry({
+      section: "每日活动",
+      title: "温哥华清爽海岸",
+      text: "非常适合徒步、骑行和海滩 +10",
+      url: "https://www.bing.com/search?q=vancouver&filters=REWARDSQUIZ_DailySet_UrlOffer&rnoreward=1",
+      signals: { opensNewTab: true, hasRewardBadge: true },
+    }),
+    entry({
       section: "日常任务",
       title: "設定目標",
       text: "設定第一個目標就可以賺取 100 點 +5",
@@ -279,6 +286,7 @@ test("classifies the observed Rewards mix without skipping direct point links", 
   ];
 
   assert.deepEqual(directLinks.map((candidate) => classifyEntry(candidate).decision), [
+    "ELIGIBLE",
     "ELIGIBLE",
     "ELIGIBLE",
   ]);
