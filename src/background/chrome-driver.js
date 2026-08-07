@@ -144,13 +144,15 @@ export function createChromeDriver({
       return ensureProgressOverlay(targetTabId);
     },
 
-    async loadCatalog() {
+    async loadCatalog({ targetTabId } = {}) {
       const combined = { entries: [], missingSections: [] };
 
       for (const source of CATALOG_SOURCES) {
-        const sourceTab = await createTab(source.url);
+        const sourceTab = targetTabId
+          ? await navigateExistingTab(targetTabId, source.url)
+          : await createTab(source.url);
         try {
-          await waitForTabLoaded(sourceTab.id);
+          if (!targetTabId) await waitForTabLoaded(sourceTab.id);
           const catalog = await collectStableCatalog(sourceTab.id, source.collector);
           combined.entries.push(
             ...catalog.entries.map((entry) => ({
@@ -167,7 +169,7 @@ export function createChromeDriver({
             );
             for (const quest of questParents) {
               try {
-                await navigateExistingTab(sourceTab.id, quest.url, false);
+                await navigateExistingTab(sourceTab.id, quest.url, Boolean(targetTabId));
                 const questCatalog = await collectStableCatalog(
                   sourceTab.id,
                   collectQuestEntries,
@@ -187,7 +189,7 @@ export function createChromeDriver({
             }
           }
         } finally {
-          await removeTab(sourceTab.id);
+          if (!targetTabId) await removeTab(sourceTab.id);
         }
       }
 
