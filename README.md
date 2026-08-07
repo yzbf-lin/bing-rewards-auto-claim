@@ -1,8 +1,8 @@
-# Bing Rewards 自动领取扩展
+# Bing Rewards 自动领取
 
-适用于 **Microsoft Edge / Google Chrome** 的 Manifest V3 扩展，用于识别、记录并处理 Microsoft Rewards 中只需打开一次或点击一次即可完成的积分入口。
+提供 **油猴脚本** 和适用于 **Microsoft Edge / Google Chrome** 的 Manifest V3 扩展，用于识别、记录并处理 Microsoft Rewards 中只需打开一次或点击一次即可完成的积分入口。
 
-扩展无需构建、无需运行时依赖，支持手动执行和北京时间每天 09:00 自动执行。
+两种版本都无需构建或运行时依赖，支持手动执行和每日自动执行。
 
 ## 功能
 
@@ -31,13 +31,27 @@
 - 记录最近识别的任务、执行结果、发现次数和成功次数。
 - 同一天不会重复执行已经成功触发的同一任务。
 - 自动跳过拼图、多次搜索、购买、订阅、邀请、等级受限及其他需要继续交互的任务。
+- 油猴版本使用单文件安装，通过 `GM_*` 存储在同一标签页的页面跳转之间恢复执行进度。
+- 油猴版本通过脚本管理器检查 GitHub Raw 地址并自动提示更新。
 
 ## 快速安装
 
-### 方式一：下载 Release 包
+### 方式一：安装油猴脚本
+
+1. 在浏览器中安装 [Tampermonkey](https://www.tampermonkey.net/) 或兼容的用户脚本管理器。
+2. 点击 [安装最新版油猴脚本](https://raw.githubusercontent.com/yzbf-lin/bing-rewards-auto-claim/main/userscript/bing-rewards-auto-claim.user.js)。
+3. 在脚本管理器的安装页面确认安装。
+4. 登录 Microsoft Rewards，然后打开 `https://rewards.bing.com/earn`。
+5. 点击页面右上角常驻面板中的“立即领取”，或使用脚本管理器菜单中的“Bing Rewards：立即领取”。
+
+油猴脚本在北京时间 09:00 后首次打开 Rewards 页面时自动执行一次。执行过程中即使当前标签页跳转到 Bing 搜索页，脚本也会从 `GM_setValue` 保存的步骤继续运行并保持进度面板。
+
+同一浏览器建议只启用油猴脚本或扩展中的一种，避免两套每日任务同时触发。
+
+### 方式二：下载扩展 Release 包
 
 1. 打开仓库的 [Releases](../../releases/latest) 页面。
-2. 下载 `bing-rewards-auto-claim-vX.Y.Z.zip`。
+2. 下载 `bing-rewards-auto-claim-vX.Y.Z.zip`；油猴用户也可下载同一 Release 中的 `bing-rewards-auto-claim-vX.Y.Z.user.js`。
 3. 将 ZIP 解压到一个长期保留的目录。
 4. 按下面的 Edge 或 Chrome 安装步骤加载解压目录。
 
@@ -61,7 +75,7 @@
 5. 在 Chrome 中登录需要使用的 Microsoft Rewards 账号。
 6. 固定扩展图标，点击“立即领取”进行首次验证。
 
-### 方式二：从源码安装
+### 方式三：从源码安装扩展
 
 ```bash
 git clone https://github.com/yzbf-lin/bing-rewards-auto-claim.git
@@ -72,6 +86,14 @@ npm test
 然后在浏览器扩展管理页加载项目根目录。
 
 ## 使用
+
+### 油猴脚本
+
+- 页面面板的“立即领取”和脚本管理器菜单均可手动触发。
+- 所有任务链接都在当前标签页打开；状态会在导航前保存，并在目标页面加载后继续执行。
+- Rewards 页面会常驻显示面板，运行期间跳转到其他 Bing 页面时也会重新显示。
+- 每天自动执行以浏览器已打开 Rewards 页面为触发条件；北京时间 09:00 后当天首次访问会补跑。
+- 更新由 Tampermonkey 等脚本管理器根据元数据中的 `@updateURL` 和 `@downloadURL` 完成。
 
 ### 手动执行
 
@@ -110,7 +132,7 @@ npm test
 
 ## 任务记录
 
-扩展使用 `chrome.storage.local` 保存：
+扩展使用 `chrome.storage.local` 保存，油猴脚本使用 `GM_setValue` 保存：
 
 - 最近一次执行结果；
 - 北京时间自动执行日期；
@@ -166,8 +188,8 @@ npm run package
 ```
 
 - `npm test`：运行全部单元测试。
-- `npm run validate`：检查 Manifest 和引用文件。
-- `npm run package`：在 `dist/` 生成可发布的 ZIP 包。
+- `npm run validate`：检查 Manifest、引用文件和油猴脚本元数据。
+- `npm run package`：在 `dist/` 生成扩展 ZIP 和单文件 `.user.js`。
 
 扩展不需要安装 npm 依赖，也不需要前端构建步骤。
 
@@ -176,9 +198,9 @@ npm run package
 推送 `v*` 标签后，GitHub Actions 会：
 
 1. 运行测试和扩展校验；
-2. 打包 `manifest.json`、`src/`、`README.md` 和 `LICENSE`；
+2. 打包扩展 ZIP 和油猴 `.user.js`；
 3. 创建对应的 GitHub Release；
-4. 上传可直接下载并解压使用的 ZIP 文件。
+4. 上传可直接下载并解压使用的 ZIP 文件及可直接安装的油猴脚本。
 
 ## License
 
