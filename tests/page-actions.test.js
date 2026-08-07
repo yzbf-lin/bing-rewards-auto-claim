@@ -123,6 +123,23 @@ test("reports a missing target section", () => {
   assert.deepEqual(collectRewardsEntries().missingSections, ["日常任务"]);
 });
 
+test("uses live progress instead of partial streak completion wording", () => {
+  const streak = card({
+    tagName: "BUTTON",
+    title: "每日连续打卡活动",
+    text: "已完成连续打卡 1 天，共 7 天。完成下一天即可赚取 30 积分。活动: 0/3",
+  });
+  const groups = SECTION_NAMES.map((name) =>
+    group(name, name === "连续打卡任务" ? [streak] : []),
+  );
+  installDocument(groups);
+
+  const result = collectRewardsEntries();
+
+  assert.equal(result.entries[0].signals.hasProgress, true);
+  assert.equal(result.entries[0].signals.completed, false);
+});
+
 test("matches a section group named through aria-labelledby", () => {
   const target = card({ href: "https://example.com/daily" });
   const groups = SECTION_NAMES.map((name) => group(name, name === "日常任务" ? [target] : []));

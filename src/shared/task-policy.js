@@ -36,6 +36,16 @@ function findRewardPoints(text) {
   return pointsMatch ? Number(pointsMatch[1].replaceAll(",", "")) : null;
 }
 
+function inferCompleted(searchable) {
+  const progressValues = [...searchable.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
+    .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
+    .filter(({ current, total }) => Number.isFinite(current) && Number.isFinite(total) && total > 0);
+  const hasIncompleteProgress = progressValues.some(({ current, total }) => current < total);
+  const allProgressComplete = progressValues.length > 0 &&
+    progressValues.every(({ current, total }) => current >= total);
+  return allProgressComplete || (COMPLETED_PATTERN.test(searchable) && !hasIncompleteProgress);
+}
+
 function isTrustedDestination(value) {
   try {
     const url = new URL(value);
@@ -60,7 +70,7 @@ export function analyzeEntryFeatures(entry) {
   const supported = SUPPORTED_KINDS.has(entry.kind);
   const navigationOnly = entry.kind === "link";
   const trustedDestination = navigationOnly && isTrustedDestination(url);
-  const completed = signals.completed ?? COMPLETED_PATTERN.test(searchable);
+  const completed = signals.completed ?? inferCompleted(searchable);
   const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
   const clickOnlyCue = signals.clickOnlyCue ?? (
     CLICK_ONLY_PATTERN.test(searchable) || /[?&]rnoreward=1(?:&|$)/i.test(url)

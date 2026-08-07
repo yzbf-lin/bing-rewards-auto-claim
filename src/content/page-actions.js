@@ -5,6 +5,16 @@ export function collectRewardsEntries() {
   const groups = Array.from(document.querySelectorAll('[role="group"]'));
   const entries = [];
   const missingSections = [];
+  const completedFromPageState = (value) => {
+    const progressValues = [...value.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
+      .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
+      .filter(({ current, total }) => Number.isFinite(current) && Number.isFinite(total) && total > 0);
+    const hasIncompleteProgress = progressValues.some(({ current, total }) => current < total);
+    const allProgressComplete = progressValues.length > 0 &&
+      progressValues.every(({ current, total }) => current >= total);
+    return allProgressComplete ||
+      (/已完成|已领取|completed|claimed/i.test(value) && !hasIncompleteProgress);
+  };
 
   const groupName = (group) => {
     const directLabel = normalize(group.getAttribute("aria-label"));
@@ -85,7 +95,7 @@ export function collectRewardsEntries() {
           clickOnlyCue:
             /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
             /[?&]rnoreward=1(?:&|$)/i.test(url ?? ""),
-          completed: /已完成|已领取|completed|claimed/i.test(text),
+          completed: completedFromPageState(text),
         },
       });
     });
@@ -98,6 +108,16 @@ export function collectDashboardEntries() {
   const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
   const elements = Array.from(document.querySelectorAll("a[href], button"));
   const entries = [];
+  const completedFromPageState = (value) => {
+    const progressValues = [...value.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
+      .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
+      .filter(({ current, total }) => Number.isFinite(current) && Number.isFinite(total) && total > 0);
+    const hasIncompleteProgress = progressValues.some(({ current, total }) => current < total);
+    const allProgressComplete = progressValues.length > 0 &&
+      progressValues.every(({ current, total }) => current >= total);
+    return allProgressComplete ||
+      (/已完成|已领取|completed|claimed/i.test(value) && !hasIncompleteProgress);
+  };
 
   const groupName = (group) => {
     if (!group) return "";
@@ -182,7 +202,7 @@ export function collectDashboardEntries() {
         clickOnlyCue:
           /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
           /[?&]rnoreward=1(?:&|$)/i.test(element.href ?? ""),
-        completed: /已完成|已领取|completed|claimed/i.test(text),
+        completed: completedFromPageState(text),
       },
     });
   });
@@ -192,6 +212,16 @@ export function collectDashboardEntries() {
 
 export function collectQuestEntries(parentTitle) {
   const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+  const completedFromPageState = (value) => {
+    const progressValues = [...value.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
+      .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
+      .filter(({ current, total }) => Number.isFinite(current) && Number.isFinite(total) && total > 0);
+    const hasIncompleteProgress = progressValues.some(({ current, total }) => current < total);
+    const allProgressComplete = progressValues.length > 0 &&
+      progressValues.every(({ current, total }) => current >= total);
+    return allProgressComplete ||
+      (/已完成|已领取|completed|claimed/i.test(value) && !hasIncompleteProgress);
+  };
   const main = document.querySelector("main");
   if (!main) return { entries: [], missingSections: [`任务子步骤：${parentTitle}`] };
 
@@ -239,7 +269,7 @@ export function collectQuestEntries(parentTitle) {
         clickOnlyCue:
           /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(ariaTitle || text) ||
           /[?&]rnoreward=1(?:&|$)/i.test(url),
-        completed: /已完成|已领取|completed|claimed/i.test(ariaTitle || text),
+        completed: completedFromPageState(ariaTitle || text),
       },
     });
   });

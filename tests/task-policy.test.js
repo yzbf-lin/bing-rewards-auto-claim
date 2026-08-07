@@ -38,6 +38,28 @@ test("skips disabled and completed cards", () => {
   assert.equal(classifyEntry(entry({ text: "浏览今日推荐 5 已完成" })).reason, "COMPLETED");
 });
 
+test("does not treat partial streak wording as a completed task", () => {
+  const result = classifyEntry(entry({
+    section: "连续打卡任务",
+    title: "每日连续打卡活动",
+    text: "已完成连续打卡 1 天，共 7 天。完成下一天即可赚取 30 积分。活动: 0/3",
+    kind: "button",
+    url: null,
+  }));
+
+  assert.equal(result.decision, "SKIPPED");
+  assert.equal(result.reason, "COMPLEX_TASK");
+});
+
+test("recognizes a task as completed when every visible progress value reaches its target", () => {
+  assert.equal(
+    classifyEntry(entry({
+      text: "每日活动 活动: 3/3",
+    })).reason,
+    "COMPLETED",
+  );
+});
+
 test("skips cards without an explicit points reward", () => {
   assert.deepEqual(classifyEntry(entry({ text: "免费专属壁纸" })), {
     decision: "SKIPPED",
