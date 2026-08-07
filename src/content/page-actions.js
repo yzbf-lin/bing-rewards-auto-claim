@@ -226,6 +226,11 @@ export function collectQuestEntries(parentTitle) {
   if (!main) return { entries: [], missingSections: [`任务子步骤：${parentTitle}`] };
 
   const entries = [];
+  const progressMatch = normalize(main.innerText || main.textContent)
+    .match(/状态:\s*(\d+)\s*\/\s*(\d+)\s*个任务/i);
+  const progress = progressMatch
+    ? { current: Number(progressMatch[1]), total: Number(progressMatch[2]) }
+    : null;
   const links = Array.from(main.querySelectorAll("a[href]"));
 
   links.forEach((element) => {
@@ -243,6 +248,7 @@ export function collectQuestEntries(parentTitle) {
 
     const text = normalize(element.innerText || element.textContent);
     const ariaTitle = normalize(element.getAttribute("aria-label"));
+    const contextText = normalize(element.parentElement?.innerText || element.parentElement?.textContent);
     const title = text || ariaTitle || `任务子步骤 ${entries.length + 1}`;
     const disabled = Boolean(
       element.hasAttribute("disabled") ||
@@ -270,11 +276,12 @@ export function collectQuestEntries(parentTitle) {
           /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(ariaTitle || text) ||
           /[?&]rnoreward=1(?:&|$)/i.test(url),
         completed: completedFromPageState(ariaTitle || text),
+        waits24Hours: /等待\s*24\s*小时|wait\s*24\s*hours/i.test(contextText),
       },
     });
   });
 
-  return { entries, missingSections: [] };
+  return { entries, missingSections: [], progress };
 }
 
 export async function activateRewardsButton(entryId) {

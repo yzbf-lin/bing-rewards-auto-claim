@@ -161,6 +161,13 @@ test("userscript adds a newly unlocked quest step after rescanning", () => {
   assert.equal(discovered[0].source, "quest");
 });
 
+test("userscript detects a clicked quest step whose progress did not advance", () => {
+  const api = loadApi();
+  assert.equal(api.questProgressAdvanced(1, 1), false);
+  assert.equal(api.questProgressAdvanced(1, 2), true);
+  assert.equal(api.questProgressAdvanced(undefined, 1), true);
+});
+
 test("userscript panel includes structured run logs", () => {
   assert.match(source, /data-role="logs"/);
   assert.match(source, /QUEST_RESCANNED/);

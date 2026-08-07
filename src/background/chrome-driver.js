@@ -16,6 +16,7 @@ const CATALOG_SOURCES = [
 function catalogSignature(catalog) {
   return JSON.stringify({
     missingSections: catalog.missingSections,
+    progress: catalog.progress ?? null,
     entries: catalog.entries.map(({ id, section, title, text, kind, url, disabled, action }) => ({
       id,
       section,
@@ -181,6 +182,7 @@ export function createChromeDriver({
                     ...entry,
                     source: "quest",
                     sourceUrl: quest.url,
+                    questProgress: questCatalog.progress ?? null,
                   })),
                 );
                 combined.missingSections.push(...questCatalog.missingSections);
@@ -216,8 +218,10 @@ export function createChromeDriver({
             ...candidate,
             source: "quest",
             sourceUrl: entry.sourceUrl,
+            questProgress: catalog.progress ?? null,
           })),
           missingSections: catalog.missingSections,
+          progress: catalog.progress ?? null,
         };
       } finally {
         if (!targetTabId) await removeTab(sourceTab.id);

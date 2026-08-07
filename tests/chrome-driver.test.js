@@ -182,6 +182,7 @@ test("expands earn quest parents into one-click child tasks", async () => {
     ...questStep,
     source: "quest",
     sourceUrl: questParent.url,
+    questProgress: null,
   });
   assert.deepEqual(fake.updates, [
     { tabId: 1, options: { url: questParent.url, active: false } },
@@ -224,6 +225,7 @@ test("rescans a quest source for newly unlocked steps", async () => {
     ...questStep,
     source: "quest",
     sourceUrl: sourceEntry.sourceUrl,
+    questProgress: null,
   }]);
   assert.deepEqual(fake.updates, [
     { tabId: 99, options: { url: sourceEntry.sourceUrl, active: true } },

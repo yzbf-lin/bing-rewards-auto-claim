@@ -171,6 +171,51 @@ test("rescans a quest after completion and executes a newly unlocked step", asyn
   assert.deepEqual(run.summary, { total: 2, completed: 2, skipped: 0, failed: 0 });
 });
 
+test("records a 24-hour wait when a clicked quest step does not advance progress", async () => {
+  const entry = {
+    id: "spotify-search",
+    section: "任务：免费 Spotify 播放列表",
+    parentTitle: "免费 Spotify 播放列表",
+    title: "在 Bing 上搜索",
+    text: "喜欢现场演出？及时获取门票",
+    kind: "link",
+    url: "https://www.bing.com/?form=ML2X8X",
+    disabled: false,
+    action: "quest-step",
+    source: "quest",
+    sourceUrl: "https://rewards.bing.com/earn/quest/spotify",
+    questProgress: { current: 1, total: 5 },
+    signals: { waits24Hours: true },
+  };
+  const driver = {
+    async loadCatalog() {
+      return { missingSections: [], entries: [entry] };
+    },
+    async executeLink() {
+      return { finalUrl: entry.url };
+    },
+    async refreshQuest() {
+      return {
+        missingSections: [],
+        entries: [entry],
+        progress: { current: 1, total: 5 },
+      };
+    },
+    async cleanup() {},
+  };
+  const runner = createClaimRunner({
+    driver,
+    storage: makeStorage(),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const run = await runner.run("manual");
+
+  assert.equal(run.results[0].outcome, "SKIPPED");
+  assert.equal(run.results[0].reason, "WAITING_24_HOURS");
+  assert.deepEqual(run.summary, { total: 1, completed: 0, skipped: 1, failed: 0 });
+});
+
 test("stores a readable abort reason without logging an extension error object", async () => {
   const warnings = [];
   const driver = {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.3
+// @version      0.3.4
 // @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
 // @author       yzbf-lin
 // @license      MIT
@@ -22,7 +22,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.3";
+  const VERSION = "0.3.4";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -57,6 +57,8 @@
     ALREADY_TRIGGERED_TODAY: "今天已经触发过",
     COMPLEX_TASK: "需要继续交互",
     INTERACTIVE_QUIZ: "需要完成测验答题",
+    WAITING_24_HOURS: "已点击，等待 24 小时后计入",
+    PROGRESS_NOT_ADVANCED: "已点击，但页面进度尚未增长",
     COMPLETED: "此前已经完成",
     DISABLED: "当前不可用",
     NO_REWARD_SIGNAL: "没有明确积分奖励",
@@ -368,6 +370,11 @@
     const main = document.querySelector("main");
     if (!main) return { entries: [], missingSections: [`任务子步骤：${parentTitle}`] };
     const entries = [];
+    const progressMatch = normalize(main.innerText || main.textContent)
+      .match(/状态:\s*(\d+)\s*\/\s*(\d+)\s*个任务/i);
+    const progress = progressMatch
+      ? { current: Number(progressMatch[1]), total: Number(progressMatch[2]) }
+      : null;
     Array.from(main.querySelectorAll("a[href]")).forEach((element) => {
       const url = element.href || element.getAttribute("href");
       let trustedTaskLink = false;
@@ -382,6 +389,9 @@
       if (!trustedTaskLink) return;
       const text = normalize(element.innerText || element.textContent);
       const ariaTitle = normalize(element.getAttribute("aria-label"));
+      const contextText = normalize(
+        element.parentElement?.innerText || element.parentElement?.textContent,
+      );
       const id = `quest-entry-${entries.length}`;
       element.setAttribute("data-rewards-auto-id", id);
       entries.push({
@@ -404,10 +414,11 @@
           clickOnlyCue: CLICK_ONLY_PATTERN.test(ariaTitle || text) ||
             /[?&]rnoreward=1(?:&|$)/i.test(url),
           completed: completedFromPageState(ariaTitle || text),
+          waits24Hours: /等待\s*24\s*小时|wait\s*24\s*hours/i.test(contextText),
         },
       });
     });
-    return { entries, missingSections: [] };
+    return { entries, missingSections: [], progress };
   }
 
   async function activateRewardsButton(entryId) {
@@ -563,7 +574,12 @@
   }
 
   function appendCatalog(state, catalog, source, sourceUrl) {
-    state.catalog.push(...catalog.entries.map((entry) => ({ ...entry, source, sourceUrl })));
+    state.catalog.push(...catalog.entries.map((entry) => ({
+      ...entry,
+      source,
+      sourceUrl,
+      ...(source === "quest" ? { questProgress: catalog.progress ?? null } : {}),
+    })));
     catalog.missingSections.forEach((section) => {
       state.results.push({
         scope: "section",
@@ -604,16 +620,29 @@
     });
   }
 
-  function findNewQuestEntries(existingEntries, refreshedEntries, sourceEntry) {
+  function findNewQuestEntries(existingEntries, refreshedEntries, sourceEntry, progress = null) {
     const knownKeys = new Set(existingEntries.map((entry) => taskMemoryKey(entry)));
     return refreshedEntries
-      .map((entry) => ({ ...entry, source: "quest", sourceUrl: sourceEntry.sourceUrl }))
+      .map((entry) => ({
+        ...entry,
+        source: "quest",
+        sourceUrl: sourceEntry.sourceUrl,
+        questProgress: progress,
+      }))
       .filter((entry) => {
         const key = taskMemoryKey(entry);
         if (knownKeys.has(key)) return false;
         knownKeys.add(key);
         return true;
       });
+  }
+
+  function questProgressAdvanced(previous, current) {
+    const previousValue = Number(previous);
+    const currentValue = Number(current);
+    return !Number.isFinite(previousValue) ||
+      !Number.isFinite(currentValue) ||
+      currentValue > previousValue;
   }
 
   function forceWindowOpenIntoCurrentTab() {
@@ -635,6 +664,25 @@
   async function finishPendingAction(state, outcome = "COMPLETED", reason = "ACTION_TRIGGERED") {
     const pending = state.pending;
     if (!pending?.entry) throw new Error("PENDING_ACTION_MISSING");
+    if (outcome === "COMPLETED" && pending.entry.source === "quest") {
+      state.phase = "rescan-quest";
+      state.questRescan = {
+        sourceUrl: pending.entry.sourceUrl,
+        parentTitle: pending.entry.parentTitle,
+        entry: pending.entry,
+        recognition: pending.recognition,
+        startedAt: pending.startedAt,
+      };
+      state.pending = null;
+      appendLog(state, "QUEST_RESCAN_STARTED", {
+        parentTitle: pending.entry.parentTitle,
+        previousProgress: pending.entry.questProgress?.current ?? null,
+      });
+      setState(state);
+      if (navigateCurrentTab(pending.entry.sourceUrl)) return;
+      await resumePhase(state);
+      return;
+    }
     storeTaskResult(
       state,
       pending.entry,
@@ -645,20 +693,6 @@
     );
     state.index += 1;
     state.pending = null;
-    if (outcome === "COMPLETED" && pending.entry.source === "quest") {
-      state.phase = "rescan-quest";
-      state.questRescan = {
-        sourceUrl: pending.entry.sourceUrl,
-        parentTitle: pending.entry.parentTitle,
-      };
-      appendLog(state, "QUEST_RESCAN_STARTED", {
-        parentTitle: pending.entry.parentTitle,
-      });
-      setState(state);
-      if (navigateCurrentTab(pending.entry.sourceUrl)) return;
-      await resumePhase(state);
-      return;
-    }
     state.phase = "execute";
     setState(state);
     await executeCatalog(state);
@@ -881,10 +915,35 @@
       if (navigateCurrentTab(rescan.sourceUrl)) return;
       setCurrentStep(state, rescan.parentTitle, "重新识别已解锁任务");
       const refreshed = await collectStableCatalog(collectQuestEntries, [rescan.parentTitle]);
-      const discovered = findNewQuestEntries(state.catalog, refreshed.entries, rescan);
+      const previousProgress = Number(rescan.entry?.questProgress?.current);
+      const refreshedProgress = Number(refreshed.progress?.current);
+      const progressDidNotAdvance = !questProgressAdvanced(previousProgress, refreshedProgress);
+      const outcome = progressDidNotAdvance ? "SKIPPED" : "COMPLETED";
+      const reason = progressDidNotAdvance
+        ? rescan.entry?.signals?.waits24Hours
+          ? "WAITING_24_HOURS"
+          : "PROGRESS_NOT_ADVANCED"
+        : "ACTION_TRIGGERED";
+      storeTaskResult(
+        state,
+        rescan.entry,
+        rescan.recognition,
+        outcome,
+        reason,
+        rescan.startedAt,
+      );
+      state.index += 1;
+      const discovered = findNewQuestEntries(
+        state.catalog,
+        refreshed.entries,
+        rescan,
+        refreshed.progress ?? null,
+      );
       if (discovered.length > 0) state.catalog.splice(state.index, 0, ...discovered);
       appendLog(state, "QUEST_RESCANNED", {
         parentTitle: rescan.parentTitle,
+        previousProgress: Number.isFinite(previousProgress) ? previousProgress : null,
+        refreshedProgress: Number.isFinite(refreshedProgress) ? refreshedProgress : null,
         discovered: discovered.length,
         total: state.catalog.length,
       });
@@ -1128,6 +1187,7 @@
     classifyEntry,
     activateRewardsLink,
     findNewQuestEntries,
+    questProgressAdvanced,
     beijingDateKey,
     isAfterBeijingRunTime,
     urlsMatchPage,

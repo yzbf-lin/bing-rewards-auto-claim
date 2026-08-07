@@ -145,23 +145,24 @@ export function createClaimRunner({
           const actionResult = entry.kind === "link"
             ? await driver.executeLink(entry, context)
             : await driver.executeButton(entry, context);
-          const result = {
-            ...entry,
-            ...actionResult,
-            scope: "entry",
-            outcome: "COMPLETED",
-            reason: "ACTION_TRIGGERED",
-            rewardPoints: decision.rewardPoints,
-            durationMs: now().getTime() - itemStartedAt,
-          };
-          run.results.push(result);
-          recordTask(entry, recognition, result.outcome);
-          logger.info("[Rewards Auto Claim] COMPLETED", result);
-          run.currentStep.status = "completed";
+          let outcome = "COMPLETED";
+          let reason = "ACTION_TRIGGERED";
 
           if (entry.source === "quest" && typeof driver.refreshQuest === "function") {
             try {
               const refreshed = await driver.refreshQuest(entry, context);
+              const previousProgress = Number(entry.questProgress?.current);
+              const refreshedProgress = Number(refreshed.progress?.current);
+              if (
+                Number.isFinite(previousProgress) &&
+                Number.isFinite(refreshedProgress) &&
+                refreshedProgress <= previousProgress
+              ) {
+                outcome = "SKIPPED";
+                reason = entry.signals?.waits24Hours
+                  ? "WAITING_24_HOURS"
+                  : "PROGRESS_NOT_ADVANCED";
+              }
               const knownKeys = new Set(catalog.entries.map((candidate) => taskMemoryKey(candidate)));
               const discovered = (refreshed.entries ?? []).filter((candidate) => {
                 const key = taskMemoryKey(candidate);
@@ -175,12 +176,33 @@ export function createClaimRunner({
               }
               logger.info("[Rewards Auto Claim] QUEST_RESCANNED", {
                 parentTitle: entry.parentTitle,
+                previousProgress: Number.isFinite(previousProgress) ? previousProgress : null,
+                refreshedProgress: Number.isFinite(refreshedProgress) ? refreshedProgress : null,
                 discovered: discovered.length,
                 total: catalog.entries.length,
               });
             } catch (error) {
               logger.warn("[Rewards Auto Claim] QUEST_RESCAN_FAILED", serializeError(error));
             }
+          }
+
+          const result = {
+            ...entry,
+            ...actionResult,
+            scope: "entry",
+            outcome,
+            reason,
+            rewardPoints: decision.rewardPoints,
+            durationMs: now().getTime() - itemStartedAt,
+          };
+          run.results.push(result);
+          recordTask(entry, recognition, result.outcome);
+          if (outcome === "COMPLETED") {
+            logger.info("[Rewards Auto Claim] COMPLETED", result);
+            run.currentStep.status = "completed";
+          } else {
+            logger.warn("[Rewards Auto Claim] TRIGGERED_WITHOUT_PROGRESS", result);
+            run.currentStep.status = "skipped";
           }
         } catch (error) {
           const result = {

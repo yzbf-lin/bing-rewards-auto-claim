@@ -306,6 +306,9 @@ test("collects enabled and disabled one-click quest steps", () => {
     : name === "href"
       ? enabled.href
       : null;
+  enabled.parentElement = {
+    innerText: "喜欢现场演出？及时获取门票。要获得下一个印章，请等待 24 小时后再回来。",
+  };
   const disabled = card({
     text: "浏览背包",
     href: "https://www.bing.com/search?q=backpack&rnoreward=1",
@@ -318,7 +321,10 @@ test("collects enabled and disabled one-click quest steps", () => {
   const external = card({ text: "外部任务", href: "https://example.com/task" });
   installDocument([]);
   document.querySelector = (selector) => selector === "main"
-    ? { querySelectorAll: () => [enabled, disabled, external] }
+    ? {
+      innerText: "活动 状态: 1/5 个任务",
+      querySelectorAll: () => [enabled, disabled, external],
+    }
     : null;
   globalThis.location = { href: "https://rewards.bing.com/earn/quest/example" };
 
@@ -329,7 +335,9 @@ test("collects enabled and disabled one-click quest steps", () => {
   assert.equal(result.entries[0].section, "任务：八月活动");
   assert.equal(result.entries[0].disabled, false);
   assert.equal(result.entries[0].signals.clickOnlyCue, true);
+  assert.equal(result.entries[0].signals.waits24Hours, true);
   assert.equal(result.entries[1].disabled, true);
+  assert.deepEqual(result.progress, { current: 1, total: 5 });
   delete globalThis.location;
 });
 

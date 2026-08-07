@@ -10,6 +10,8 @@ const REASON_LABELS = {
   ALREADY_TRIGGERED_TODAY: "今天已经触发过",
   COMPLEX_TASK: "需要继续交互",
   INTERACTIVE_QUIZ: "需要完成测验答题",
+  WAITING_24_HOURS: "已点击，等待 24 小时后计入",
+  PROGRESS_NOT_ADVANCED: "已点击，但页面进度尚未增长",
   COMPLETED: "此前已经完成",
   DISABLED: "当前不可用",
   NO_REWARD_SIGNAL: "没有明确积分奖励",
