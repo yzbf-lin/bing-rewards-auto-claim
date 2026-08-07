@@ -1,10 +1,15 @@
 (() => {
   const INSTANCE_KEY = "__bingRewardsProgressOverlay";
-  if (globalThis[INSTANCE_KEY]) return;
-  globalThis[INSTANCE_KEY] = true;
+  const HOST_ID = "bing-rewards-progress-overlay";
+  const existing = globalThis[INSTANCE_KEY];
+  if (typeof existing?.refresh === "function") {
+    existing.refresh();
+    return;
+  }
+  document.getElementById(HOST_ID)?.remove();
 
   const host = document.createElement("div");
-  host.id = "bing-rewards-progress-overlay";
+  host.id = HOST_ID;
   host.setAttribute("aria-live", "polite");
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
@@ -152,13 +157,17 @@
 
   }
 
-  chrome.storage.local.get(["currentRun", "lastRun"]).then(({ currentRun, lastRun }) => {
+  async function refresh() {
+    const { currentRun, lastRun } = await chrome.storage.local.get(["currentRun", "lastRun"]);
     if (currentRun) {
       render(currentRun);
     } else if (lastRun) {
       render(lastRun, true);
     }
-  });
+  }
+
+  globalThis[INSTANCE_KEY] = { refresh };
+  refresh();
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;

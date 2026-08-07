@@ -12,11 +12,13 @@ function chromeFake(
   const tabs = new Map();
   const removed = [];
   const updates = [];
+  const injections = [];
   const emptyEvent = { addListener() {}, removeListener() {} };
 
   return {
     removed,
     updates,
+    injections,
     seedTab(tab) {
       tabs.set(tab.id, { status: "complete", ...tab });
     },
@@ -48,6 +50,10 @@ function chromeFake(
       },
       scripting: {
         async executeScript(options) {
+          if (options.files) {
+            injections.push({ tabId: options.target.tabId, files: options.files });
+            return [{}];
+          }
           if (options.func.name === "collectRewardsEntries") {
             return [{ result: structuredClone(catalog) }];
           }
@@ -208,6 +214,11 @@ test("loads catalogs and opens links in the supplied current tab", async () => {
   ]);
   assert.equal(result.finalUrl, dashboardEntry.url);
   assert.deepEqual(fake.removed, []);
+  assert.deepEqual(fake.injections, [
+    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+  ]);
 });
 
 test("re-collects and activates a unique button", async () => {
@@ -258,5 +269,8 @@ test("restores the supplied current tab to the Rewards earn page", async () => {
 
   assert.deepEqual(fake.updates, [
     { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
+  ]);
+  assert.deepEqual(fake.injections, [
+    { tabId: 99, files: ["src/content/progress-overlay.js"] },
   ]);
 });

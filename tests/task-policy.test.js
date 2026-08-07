@@ -245,3 +245,45 @@ test("recognizes a positive claimable-points button", () => {
     },
   );
 });
+
+test("classifies the observed Rewards mix without skipping direct point links", () => {
+  const directLinks = [
+    entry({
+      section: "日常任务",
+      title: "達成目標！",
+      text: "恭喜您晉升到第 2 級 +5",
+      url: "https://rewards.bing.com/levels?FORM=ML16O7",
+      signals: { opensNewTab: true, hasRewardBadge: true },
+    }),
+    entry({
+      section: "日常任务",
+      title: "設定目標",
+      text: "設定第一個目標就可以賺取 100 點 +5",
+      url: "https://rewards.bing.com/redeem/all?FORM=ML16O4",
+      signals: { opensNewTab: true, hasRewardBadge: true },
+    }),
+  ];
+  const interactiveLinks = [
+    entry({
+      section: "日常任务",
+      title: "完成搜索",
+      text: "只需完成3 searches即可获得10 points",
+      url: "https://www.bing.com/?features=vstooltip",
+    }),
+    entry({
+      section: "每日活动",
+      title: "艺术叛逆者？",
+      text: "测试你对弗里达·卡罗的了解 +10",
+      url: "https://www.bing.com/search?q=Frida&form=dsetqu&filters=BingQA_QuizLanding_Layout",
+    }),
+  ];
+
+  assert.deepEqual(directLinks.map((candidate) => classifyEntry(candidate).decision), [
+    "ELIGIBLE",
+    "ELIGIBLE",
+  ]);
+  assert.deepEqual(interactiveLinks.map((candidate) => classifyEntry(candidate).reason), [
+    "COMPLEX_TASK",
+    "COMPLEX_TASK",
+  ]);
+});

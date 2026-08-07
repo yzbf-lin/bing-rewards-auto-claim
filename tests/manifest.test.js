@@ -25,5 +25,6 @@ test("progress overlay persists and restores the latest run after navigation", a
   );
 
   assert.match(source, /get\(\["currentRun", "lastRun"\]\)/);
+  assert.match(source, /globalThis\[INSTANCE_KEY\] = \{ refresh \}/);
   assert.doesNotMatch(source, /setTimeout\(\(\) => host\.remove\(\)/);
 });

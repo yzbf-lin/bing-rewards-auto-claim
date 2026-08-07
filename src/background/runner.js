@@ -92,7 +92,9 @@ export function createClaimRunner({
         const recognition = classifyEntry(entry);
         const previous = taskMemory[taskMemoryKey(entry)];
         const decision =
-          recognition.decision === "ELIGIBLE" && previous?.lastCompletedDate === runDateKey
+          trigger !== "manual" &&
+          recognition.decision === "ELIGIBLE" &&
+          previous?.lastCompletedDate === runDateKey
             ? {
               decision: "SKIPPED",
               reason: "ALREADY_TRIGGERED_TODAY",

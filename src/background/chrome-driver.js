@@ -37,6 +37,17 @@ export function createChromeDriver({
 }) {
   const createdTabs = new Set();
 
+  const ensureProgressOverlay = async (tabId) => {
+    try {
+      await chromeApi.scripting.executeScript({
+        target: { tabId },
+        files: ["src/content/progress-overlay.js"],
+      });
+    } catch {
+      // The target may have closed or navigated to a browser-internal page.
+    }
+  };
+
   const removeTab = async (tabId) => {
     if (!createdTabs.has(tabId)) return;
     createdTabs.delete(tabId);
@@ -84,13 +95,18 @@ export function createChromeDriver({
   const navigateExistingTab = async (tabId, url, active = true) => {
     const currentTab = await chromeApi.tabs.get(tabId);
     if (currentTab.url === url) {
-      return currentTab.status === "complete"
+      const loadedTab = currentTab.status === "complete"
         ? currentTab
         : waitForTabLoaded(tabId);
+      const result = await loadedTab;
+      if (active) await ensureProgressOverlay(tabId);
+      return result;
     }
 
     await chromeApi.tabs.update(tabId, { url, active });
-    return waitForTabLoaded(tabId);
+    const loadedTab = await waitForTabLoaded(tabId);
+    if (active) await ensureProgressOverlay(tabId);
+    return loadedTab;
   };
 
   const collectOnce = async (tabId, collector, args = []) => {

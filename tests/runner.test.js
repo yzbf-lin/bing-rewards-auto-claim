@@ -143,7 +143,7 @@ test("returns the active run instead of starting a concurrent run", async () => 
   await first;
 });
 
-test("does not trigger the same remembered task twice on one Beijing date", async () => {
+test("does not trigger the same remembered automatic task twice on one Beijing date", async () => {
   let executions = 0;
   const storage = makeStorage();
   const catalogEntry = {
@@ -172,12 +172,49 @@ test("does not trigger the same remembered task twice on one Beijing date", asyn
     now: () => new Date("2026-08-06T02:00:00.000Z"),
   });
 
-  const first = await runner.run("manual");
-  const second = await runner.run("manual");
+  const first = await runner.run("scheduled");
+  const second = await runner.run("scheduled");
 
   assert.equal(first.results[0].outcome, "COMPLETED");
   assert.equal(second.results[0].reason, "ALREADY_TRIGGERED_TODAY");
   assert.equal(executions, 1);
+});
+
+test("allows a manual run to retry a task triggered earlier today", async () => {
+  let executions = 0;
+  const storage = makeStorage();
+  const catalogEntry = {
+    id: "daily-topic",
+    section: "积分首页",
+    title: "解码历史",
+    text: "解码历史 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=egypt&rnoreward=1",
+    disabled: false,
+  };
+  const driver = {
+    async loadCatalog() {
+      return { missingSections: [], entries: [catalogEntry] };
+    },
+    async executeLink(entry) {
+      executions += 1;
+      return { finalUrl: entry.url };
+    },
+    async cleanup() {},
+  };
+  const runner = createClaimRunner({
+    driver,
+    storage,
+    logger: { info() {}, warn() {}, error() {} },
+    now: () => new Date("2026-08-07T02:00:00.000Z"),
+  });
+
+  const first = await runner.run("manual");
+  const second = await runner.run("manual");
+
+  assert.equal(first.results[0].outcome, "COMPLETED");
+  assert.equal(second.results[0].outcome, "COMPLETED");
+  assert.equal(executions, 2);
 });
 
 test("passes the manual current-tab context to catalog and action operations", async () => {
