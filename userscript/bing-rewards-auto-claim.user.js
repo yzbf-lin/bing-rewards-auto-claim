@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.0
+// @version      0.3.1
 // @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
 // @author       yzbf-lin
 // @license      MIT
@@ -22,7 +22,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -414,6 +414,16 @@
     return false;
   }
 
+  function activateRewardsLink(entryId) {
+    const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
+    if (!element || element.tagName !== "A") return null;
+    const url = element.href || element.getAttribute("href");
+    element.removeAttribute("target");
+    element.setAttribute("target", "_self");
+    element.click();
+    return { activated: true, url };
+  }
+
   function normalizedUrl(value) {
     try {
       const url = new URL(value);
@@ -635,6 +645,54 @@
     await finishPendingAction(state);
   }
 
+  async function executeLink(state) {
+    const { entry } = state.pending;
+    if (navigateCurrentTab(entry.sourceUrl || REWARDS_URL)) return;
+    setCurrentStep(state, entry.title || "未命名入口", entry.section || "积分任务");
+    await delay(SETTLE_DELAY_MS);
+    const collector = entry.source === "dashboard"
+      ? collectDashboardEntries
+      : entry.source === "quest"
+        ? () => collectQuestEntries(entry.parentTitle)
+        : collectRewardsEntries;
+    const catalog = collector();
+    let matches = catalog.entries.filter((candidate) =>
+      candidate.section === entry.section && candidate.title === entry.title &&
+      candidate.text === entry.text && candidate.kind === "link"
+    );
+    if (matches.length === 0) {
+      matches = catalog.entries.filter((candidate) =>
+        candidate.section === entry.section && candidate.title === entry.title &&
+        candidate.kind === "link"
+      );
+    }
+    if (matches.length !== 1) {
+      await finishPendingAction(state, "FAILED", "LINK_NOT_UNIQUE");
+      return;
+    }
+
+    state.phase = "execute-link-wait";
+    setState(state);
+    const restoreWindowOpen = forceWindowOpenIntoCurrentTab();
+    const sourceUrl = location.href;
+    const activation = activateRewardsLink(matches[0].id);
+    if (!activation?.activated) {
+      restoreWindowOpen();
+      await finishPendingAction(state, "FAILED", "LINK_ACTIVATION_FAILED");
+      return;
+    }
+    await delay(250);
+    const destination = activation.url || entry.url;
+    if (location.href === sourceUrl && destination !== sourceUrl) {
+      restoreWindowOpen();
+      location.assign(destination);
+      return;
+    }
+    await delay(SETTLE_DELAY_MS);
+    restoreWindowOpen();
+    await finishPendingAction(state);
+  }
+
   async function executeCatalog(state) {
     while (state.index < state.catalog.length) {
       const entry = state.catalog[state.index];
@@ -657,11 +715,9 @@
 
       state.pending = { entry, recognition, startedAt: Date.now() };
       if (entry.kind === "link") {
-        state.phase = "execute-link-wait";
+        state.phase = "execute-link";
         setState(state);
-        if (navigateCurrentTab(entry.url)) return;
-        await delay(SETTLE_DELAY_MS);
-        await finishPendingAction(state);
+        await executeLink(state);
         return;
       }
 
@@ -796,6 +852,11 @@
       );
       await delay(SETTLE_DELAY_MS);
       await finishPendingAction(state);
+      return;
+    }
+
+    if (state.phase === "execute-link") {
+      await executeLink(state);
       return;
     }
 
@@ -958,6 +1019,7 @@
     inferCompleted,
     analyzeEntryFeatures,
     classifyEntry,
+    activateRewardsLink,
     beijingDateKey,
     isAfterBeijingRunTime,
     urlsMatchPage,

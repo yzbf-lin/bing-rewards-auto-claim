@@ -11,13 +11,18 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 
-function loadApi() {
+function loadRuntime(overrides = {}) {
   const context = vm.createContext({
     __BING_REWARDS_USERSCRIPT_TEST__: true,
     URL,
+    ...overrides,
   });
   vm.runInContext(source, context);
-  return context.__BING_REWARDS_USERSCRIPT_API__;
+  return { api: context.__BING_REWARDS_USERSCRIPT_API__, context };
+}
+
+function loadApi() {
+  return loadRuntime().api;
 }
 
 test("userscript metadata supports installation and automatic updates", () => {
@@ -69,4 +74,34 @@ test("userscript accepts Rewards redirects that add locale parameters", () => {
     ),
     true,
   );
+});
+
+test("userscript clicks the original card link instead of navigating directly", () => {
+  const attributes = new Map([
+    ["data-rewards-auto-id", "daily-ancient-design"],
+    ["target", "_blank"],
+  ]);
+  const element = {
+    tagName: "A",
+    href: "https://www.bing.com/search?q=ancient+design",
+    clicked: false,
+    getAttribute: (name) => attributes.get(name) ?? null,
+    setAttribute: (name, value) => attributes.set(name, value),
+    removeAttribute: (name) => attributes.delete(name),
+    click() {
+      this.clicked = true;
+    },
+  };
+  const { api } = loadRuntime({
+    document: {
+      querySelector: () => element,
+    },
+  });
+
+  assert.deepEqual(
+    { ...api.activateRewardsLink("daily-ancient-design") },
+    { activated: true, url: element.href },
+  );
+  assert.equal(element.clicked, true);
+  assert.equal(attributes.get("target"), "_self");
 });

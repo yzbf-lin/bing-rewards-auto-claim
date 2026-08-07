@@ -13,12 +13,14 @@ function chromeFake(
   const removed = [];
   const updates = [];
   const injections = [];
+  const linkActivations = [];
   const emptyEvent = { addListener() {}, removeListener() {} };
 
   return {
     removed,
     updates,
     injections,
+    linkActivations,
     seedTab(tab) {
       tabs.set(tab.id, { status: "complete", ...tab });
     },
@@ -65,6 +67,19 @@ function chromeFake(
           }
           if (options.func.name === "activateRewardsButton") {
             return [{ result: true }];
+          }
+          if (options.func.name === "activateRewardsLink") {
+            const candidates = [
+              ...(catalog.entries ?? []),
+              ...(dashboardCatalog.entries ?? []),
+              ...(questCatalog.entries ?? []),
+            ];
+            const entry = candidates.find((candidate) => candidate.id === options.args[0]);
+            if (!entry) return [{ result: null }];
+            const tab = tabs.get(options.target.tabId);
+            tabs.set(options.target.tabId, { ...tab, status: "complete", url: entry.url });
+            linkActivations.push({ tabId: options.target.tabId, entryId: entry.id });
+            return [{ result: { activated: true, url: entry.url } }];
           }
           throw new Error(`unexpected function ${options.func.name}`);
         },
@@ -174,12 +189,24 @@ test("expands earn quest parents into one-click child tasks", async () => {
 });
 
 test("opens a link in the background and closes it after load", async () => {
-  const fake = chromeFake({ missingSections: [], entries: [] });
+  const entry = {
+    id: "reward-entry-3-0",
+    section: "日常任务",
+    title: "古代设计与建造",
+    text: "古代设计与建造 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=ancient+design",
+    disabled: false,
+    source: "earn",
+    sourceUrl: "https://rewards.bing.com/earn",
+  };
+  const fake = chromeFake({ missingSections: [], entries: [entry] });
   const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
 
-  const result = await driver.executeLink({ url: "https://example.com/reward" });
+  const result = await driver.executeLink(entry);
 
-  assert.equal(result.finalUrl, "https://example.com/reward");
+  assert.equal(result.finalUrl, entry.url);
+  assert.deepEqual(fake.linkActivations, [{ tabId: 1, entryId: entry.id }]);
   assert.deepEqual(fake.removed, [1]);
 });
 
@@ -210,9 +237,11 @@ test("loads catalogs and opens actions in the supplied current tab without creat
   assert.deepEqual(fake.updates, [
     { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
     { tabId: 99, options: { url: "https://rewards.bing.com/dashboard?section=dailyset", active: true } },
-    { tabId: 99, options: { url: dashboardEntry.url, active: true } },
   ]);
   assert.equal(result.finalUrl, dashboardEntry.url);
+  assert.deepEqual(fake.linkActivations, [
+    { tabId: 99, entryId: dashboardEntry.id },
+  ]);
   assert.deepEqual(fake.removed, []);
   assert.deepEqual(fake.injections, [
     { tabId: 99, files: ["src/content/progress-overlay.js"] },

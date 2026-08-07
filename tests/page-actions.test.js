@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   activateRewardsButton,
+  activateRewardsLink,
   collectDashboardEntries,
   collectQuestEntries,
   collectRewardsEntries,
@@ -31,6 +32,9 @@ function card({ tagName = "A", text = "领取奖励 +5", title = "领取奖励",
     },
     setAttribute(name, value) {
       attributes.set(name, value);
+    },
+    removeAttribute(name) {
+      attributes.delete(name);
     },
     querySelector(selector) {
       if (selector === "img[alt]") {
@@ -172,6 +176,22 @@ test("activates exactly the tagged button", async () => {
   assert.equal(await activateRewardsButton("reward-entry-3"), true);
   assert.equal(target.clicked, true);
   assert.equal(await activateRewardsButton("missing"), false);
+});
+
+test("activates the original reward link in the current tab", () => {
+  const target = card({ href: "https://www.bing.com/search?q=ancient+design" });
+  const groups = [group("日常任务", [target])];
+  installDocument(groups, ["日常任务"]);
+  target.setAttribute("data-rewards-auto-id", "reward-link-1");
+  target.setAttribute("target", "_blank");
+
+  assert.deepEqual(activateRewardsLink("reward-link-1"), {
+    activated: true,
+    url: target.href,
+  });
+  assert.equal(target.clicked, true);
+  assert.equal(target.getAttribute("target"), "_self");
+  assert.equal(activateRewardsLink("missing"), null);
 });
 
 test("collects explicit reward links from the Rewards dashboard", () => {

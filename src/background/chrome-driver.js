@@ -1,4 +1,5 @@
 import {
+  activateRewardsLink,
   activateRewardsButton,
   collectDashboardEntries,
   collectQuestEntries,
@@ -197,19 +198,78 @@ export function createChromeDriver({
     },
 
     async executeLink(entry, { targetTabId } = {}) {
-      if (targetTabId) {
-        const loadedTab = await navigateExistingTab(targetTabId, entry.url);
-        await delay(settleDelayMs);
-        return { finalUrl: loadedTab.url ?? entry.url };
-      }
+      const sourceUrl = entry.sourceUrl ?? REWARDS_URL;
+      const collector = entry.source === "dashboard"
+        ? collectDashboardEntries
+        : entry.source === "quest"
+          ? collectQuestEntries
+          : collectRewardsEntries;
+      const collectorArgs = entry.source === "quest" ? [entry.parentTitle] : [];
+      const sourceTab = targetTabId
+        ? await navigateExistingTab(targetTabId, sourceUrl)
+        : await createTab(sourceUrl);
+      let openedTabId = null;
+      const onCreated = (tab) => {
+        if (tab.openerTabId !== sourceTab.id) return;
+        openedTabId = tab.id;
+        createdTabs.add(tab.id);
+      };
+      chromeApi.tabs.onCreated.addListener(onCreated);
 
-      const targetTab = await createTab(entry.url);
       try {
-        const loadedTab = await waitForTabLoaded(targetTab.id);
+        if (!targetTabId) await waitForTabLoaded(sourceTab.id);
         await delay(settleDelayMs);
-        return { finalUrl: loadedTab.url ?? entry.url };
+        const catalog = await collectOnce(sourceTab.id, collector, collectorArgs);
+        let matches = catalog.entries.filter((candidate) =>
+          candidate.section === entry.section &&
+          candidate.title === entry.title &&
+          candidate.text === entry.text &&
+          candidate.kind === "link",
+        );
+        if (matches.length === 0) {
+          matches = catalog.entries.filter((candidate) =>
+            candidate.section === entry.section &&
+            candidate.title === entry.title &&
+            candidate.kind === "link",
+          );
+        }
+        if (matches.length !== 1) throw new Error("LINK_NOT_UNIQUE");
+
+        const activationSource = await chromeApi.tabs.get(sourceTab.id);
+        const activation = await chromeApi.scripting.executeScript({
+          target: { tabId: sourceTab.id },
+          func: activateRewardsLink,
+          args: [matches[0].id],
+        });
+        const activationResult = activation?.[0]?.result;
+        if (!activationResult?.activated) throw new Error("LINK_ACTIVATION_FAILED");
+        await delay(settleDelayMs);
+
+        let resultTab;
+        if (openedTabId) {
+          resultTab = await waitForTabLoaded(openedTabId);
+          if (targetTabId) {
+            resultTab = await navigateExistingTab(targetTabId, resultTab.url ?? activationResult.url);
+          }
+        } else {
+          const currentTab = await chromeApi.tabs.get(sourceTab.id);
+          if (currentTab.status !== "complete") {
+            resultTab = await waitForTabLoaded(sourceTab.id);
+          } else if (currentTab.url !== activationSource.url) {
+            resultTab = currentTab;
+          } else {
+            resultTab = await navigateExistingTab(
+              sourceTab.id,
+              activationResult.url ?? entry.url,
+              Boolean(targetTabId),
+            );
+          }
+        }
+        return { finalUrl: resultTab.url ?? activationResult.url ?? entry.url };
       } finally {
-        await removeTab(targetTab.id);
+        chromeApi.tabs.onCreated.removeListener(onCreated);
+        if (openedTabId) await removeTab(openedTabId);
+        if (!targetTabId) await removeTab(sourceTab.id);
       }
     },
 

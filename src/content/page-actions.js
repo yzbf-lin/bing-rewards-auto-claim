@@ -302,3 +302,13 @@ export async function activateRewardsButton(entryId) {
 
   return true;
 }
+
+export function activateRewardsLink(entryId) {
+  const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
+  if (!element || element.tagName !== "A") return null;
+  const url = element.href || element.getAttribute("href");
+  element.removeAttribute("target");
+  element.setAttribute("target", "_self");
+  element.click();
+  return { activated: true, url };
+}
