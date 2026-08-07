@@ -3,12 +3,12 @@ const COMPLEX_TASK_PATTERNS = [
   /答题|测验|trivia/i,
   /拼图|puzzle/i,
   /投票|poll/i,
-  /购买|订阅|purchase|subscribe/i,
-  /下载|安装|download|install/i,
+  /购买|購買|订阅|訂閱|purchase|subscribe/i,
+  /下载|下載|安装|安裝|download|install/i,
   /xbox|game\s*pass|游戏|gaming/i,
-  /连续|签到|streak|check[ -]?in/i,
-  /邀请|invite|refer/i,
-  /默认搜索引擎|default\s+search/i,
+  /连续|連續|签到|簽到|streak|check[ -]?in/i,
+  /邀请|邀請|invite|refer/i,
+  /默认搜索引擎|預設搜尋引擎|default\s+search/i,
   /\/earn\/quest\/|punchcard|\d+\s*\/\s*\d+\s*个任务|multi[ -]?step\s+quest/i,
 ];
 
@@ -27,12 +27,12 @@ function findRewardPoints(text) {
     return Number(claimableMatch[1].replaceAll(",", ""));
   }
 
-  const plusMatch = text.match(/\+\s*([\d,]{1,9})(?:\s*积分)?/i);
+  const plusMatch = text.match(/\+\s*([\d,]{1,9})(?:\s*(?:积分|点|點|points?))?/i);
   if (plusMatch) {
     return Number(plusMatch[1].replaceAll(",", ""));
   }
 
-  const pointsMatch = text.match(/([\d,]{1,9})\s*(?:积分|points?)/i);
+  const pointsMatch = text.match(/([\d,]{1,9})\s*(?:积分|点|點|points?)/i);
   return pointsMatch ? Number(pointsMatch[1].replaceAll(",", "")) : null;
 }
 

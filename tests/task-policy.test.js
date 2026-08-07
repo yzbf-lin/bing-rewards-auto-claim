@@ -89,6 +89,18 @@ test("skips search, quiz, puzzle, purchase and streak tasks", () => {
   }
 });
 
+test("skips traditional-Chinese install tasks", () => {
+  const result = classifyEntry(entry({
+    section: "日常任务",
+    title: "瀏覽器裡的 Rewards",
+    text: "安裝最新的瀏覽器擴充功能，並賺取 10 點積分。",
+    url: "https://www.bing.com/set/browserextension/rewards",
+  }));
+
+  assert.equal(result.decision, "SKIPPED");
+  assert.equal(result.reason, "COMPLEX_TASK");
+});
+
 test("skips ambiguous entry types", () => {
   assert.deepEqual(classifyEntry(entry({ kind: "unknown" })), {
     decision: "SKIPPED",
@@ -109,6 +121,13 @@ test("parses reward values that contain thousands separators", () => {
       reason: "COMPLEX_TASK",
       rewardPoints: 1320,
     },
+  );
+});
+
+test("parses localized point labels", () => {
+  assert.equal(
+    classifyEntry(entry({ text: "打开活动即可获得 5 點" })).rewardPoints,
+    5,
   );
 });
 
@@ -161,6 +180,30 @@ test("recognizes an unseen one-step task from page features", () => {
     reason: "FEATURE_MATCHED_ONE_STEP",
     rewardPoints: 8,
   });
+});
+
+test("allows an observed daily task whose points badge has no plus sign", () => {
+  assert.deepEqual(
+    classifyEntry(entry({
+      section: "日常任务",
+      title: "達成目標！",
+      text: "達成目標！ 恭喜您晉升到第 2 級。 5",
+      rewardPoints: 5,
+      url: "https://rewards.bing.com/levels?FORM=ML16O7",
+      signals: {
+        opensNewTab: true,
+        hasProgress: false,
+        hasRewardBadge: true,
+        clickOnlyCue: false,
+        completed: false,
+      },
+    })),
+    {
+      decision: "ELIGIBLE",
+      reason: "FEATURE_MATCHED_ONE_STEP",
+      rewardPoints: 5,
+    },
+  );
 });
 
 test("keeps a progress task out of generic one-step recognition", () => {

@@ -120,6 +120,31 @@ test("collects top-level cards from all four Rewards sections", () => {
   assert.match(result.entries[0].id, /^reward-entry-/);
 });
 
+test("detects a plain numeric points badge on a daily task card", () => {
+  const dailyLink = card({
+    href: "https://rewards.bing.com/levels?FORM=ML16O7",
+    title: "達成目標！",
+    text: "達成目標！ 恭喜您晉升到第 2 級。 5",
+  });
+  dailyLink.setAttribute("target", "_blank");
+  dailyLink.querySelectorAll = (selector) => selector === "p"
+    ? [
+      { textContent: "達成目標！" },
+      { textContent: "恭喜您晉升到第 2 級。" },
+      { textContent: "5" },
+    ]
+    : [];
+  const groups = SECTION_NAMES.map((name) =>
+    group(name, name === "日常任务" ? [dailyLink] : []),
+  );
+  installDocument(groups);
+
+  const result = collectRewardsEntries();
+
+  assert.equal(result.entries[0].rewardPoints, 5);
+  assert.equal(result.entries[0].signals.hasRewardBadge, true);
+});
+
 test("reports a missing target section", () => {
   const groups = SECTION_NAMES.slice(0, 3).map((name) => group(name, []));
   installDocument(groups, SECTION_NAMES.slice(0, 3));

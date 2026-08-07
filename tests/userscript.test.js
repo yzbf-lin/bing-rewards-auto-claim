@@ -73,6 +73,28 @@ test("userscript clicks a daily-activity card even when its URL opens a quiz", (
   assert.equal(result.reason, "KNOWN_ONE_STEP_REWARD");
 });
 
+test("userscript accepts a daily task with a plain numeric points badge", () => {
+  const api = loadApi();
+  const result = api.classifyEntry({
+    section: "日常任务",
+    title: "設定目標",
+    text: "設定第一個目標就可以賺取 100 點！ 5",
+    rewardPoints: 5,
+    kind: "link",
+    url: "https://rewards.bing.com/redeem/all?FORM=ML16O4",
+    disabled: false,
+    signals: {
+      opensNewTab: true,
+      hasRewardBadge: true,
+      completed: false,
+    },
+  });
+
+  assert.equal(result.decision, "ELIGIBLE");
+  assert.equal(result.reason, "FEATURE_MATCHED_ONE_STEP");
+  assert.equal(result.rewardPoints, 5);
+});
+
 test("userscript keeps a non-daily interactive quiz as a manual task", () => {
   const api = loadApi();
   const result = api.classifyEntry({
@@ -85,6 +107,21 @@ test("userscript keeps a non-daily interactive quiz as a manual task", () => {
   });
 
   assert.equal(result.reason, "INTERACTIVE_QUIZ");
+});
+
+test("userscript keeps a traditional-Chinese install card as a manual task", () => {
+  const api = loadApi();
+  const result = api.classifyEntry({
+    section: "日常任务",
+    title: "瀏覽器裡的 Rewards",
+    text: "安裝最新的瀏覽器擴充功能，並賺取 10 點積分。",
+    kind: "link",
+    url: "https://www.bing.com/set/browserextension/rewards",
+    disabled: false,
+  });
+
+  assert.equal(result.decision, "SKIPPED");
+  assert.equal(result.reason, "COMPLEX_TASK");
 });
 
 test("userscript accepts Rewards redirects that add locale parameters", () => {

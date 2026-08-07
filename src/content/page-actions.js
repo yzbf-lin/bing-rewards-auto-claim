@@ -72,6 +72,16 @@ export function collectRewardsEntries() {
       const url = element.tagName === "A" ? element.href || element.getAttribute("href") : null;
       const paragraphTexts = Array.from(element.querySelectorAll("p"))
         .map((paragraph) => normalize(paragraph.textContent));
+      const dailyTaskReward = section === "日常任务"
+        ? paragraphTexts
+          .slice()
+          .reverse()
+          .map((value) => value.match(/^\+?\s*([\d,]{1,9})(?:\s*(?:积分|点|點|points?))?$/i))
+          .find(Boolean)
+        : null;
+      const rewardPoints = dailyTaskReward
+        ? Number(dailyTaskReward[1].replaceAll(",", ""))
+        : null;
       const disabled = Boolean(
         element.disabled ||
           element.hasAttribute("disabled") ||
@@ -88,10 +98,12 @@ export function collectRewardsEntries() {
         kind: element.tagName === "A" ? "link" : "button",
         url,
         disabled,
+        rewardPoints,
         signals: {
           opensNewTab: element.getAttribute("target") === "_blank",
           hasProgress: /\d+\s*\/\s*\d+/.test(text),
-          hasRewardBadge: paragraphTexts.some((value) => /^\+\s*[\d,]+/.test(value)),
+          hasRewardBadge:
+            rewardPoints !== null || paragraphTexts.some((value) => /^\+\s*[\d,]+/.test(value)),
           clickOnlyCue:
             /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
             /[?&]rnoreward=1(?:&|$)/i.test(url ?? ""),

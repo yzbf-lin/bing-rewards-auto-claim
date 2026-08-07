@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.4
+// @version      0.3.5
 // @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
 // @author       yzbf-lin
 // @license      MIT
@@ -22,7 +22,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.4";
+  const VERSION = "0.3.5";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -38,12 +38,12 @@
     /答题|测验|trivia/i,
     /拼图|puzzle/i,
     /投票|poll/i,
-    /购买|订阅|purchase|subscribe/i,
-    /下载|安装|download|install/i,
+    /购买|購買|订阅|訂閱|purchase|subscribe/i,
+    /下载|下載|安装|安裝|download|install/i,
     /xbox|game\s*pass|游戏|gaming/i,
-    /连续|签到|streak|check[ -]?in/i,
-    /邀请|invite|refer/i,
-    /默认搜索引擎|default\s+search/i,
+    /连续|連續|签到|簽到|streak|check[ -]?in/i,
+    /邀请|邀請|invite|refer/i,
+    /默认搜索引擎|預設搜尋引擎|default\s+search/i,
     /\/earn\/quest\/|punchcard|\d+\s*\/\s*\d+\s*个任务|multi[ -]?step\s+quest/i,
   ];
   const COMPLETED_PATTERN = /已完成|已领取|completed|claimed/i;
@@ -128,9 +128,9 @@
   function findRewardPoints(text) {
     const claimableMatch = text.match(/可领取(?:\s+可领取)?\s+([\d,]+)\s+领取/i);
     if (claimableMatch) return Number(claimableMatch[1].replaceAll(",", ""));
-    const plusMatch = text.match(/\+\s*([\d,]{1,9})(?:\s*积分)?/i);
+    const plusMatch = text.match(/\+\s*([\d,]{1,9})(?:\s*(?:积分|点|點|points?))?/i);
     if (plusMatch) return Number(plusMatch[1].replaceAll(",", ""));
-    const pointsMatch = text.match(/([\d,]{1,9})\s*(?:积分|points?)/i);
+    const pointsMatch = text.match(/([\d,]{1,9})\s*(?:积分|点|點|points?)/i);
     return pointsMatch ? Number(pointsMatch[1].replaceAll(",", "")) : null;
   }
 
@@ -282,6 +282,16 @@
         const ariaTitle = normalize(element.getAttribute("aria-label"));
         const paragraphTexts = Array.from(element.querySelectorAll("p"))
           .map((paragraph) => normalize(paragraph.textContent));
+        const dailyTaskReward = section === "日常任务"
+          ? paragraphTexts
+            .slice()
+            .reverse()
+            .map((value) => value.match(/^\+?\s*([\d,]{1,9})(?:\s*(?:积分|点|點|points?))?$/i))
+            .find(Boolean)
+          : null;
+        const rewardPoints = dailyTaskReward
+          ? Number(dailyTaskReward[1].replaceAll(",", ""))
+          : null;
         const restrictionText = /需要.+级别|等级不足|level required/i.test(text);
         const url = element.tagName === "A" ? element.href || element.getAttribute("href") : null;
         element.setAttribute("data-rewards-auto-id", id);
@@ -292,6 +302,7 @@
           text,
           kind: element.tagName === "A" ? "link" : "button",
           url,
+          rewardPoints,
           disabled: Boolean(
             element.disabled || element.hasAttribute("disabled") ||
             element.getAttribute("aria-disabled") === "true" || restrictionText
@@ -299,7 +310,8 @@
           signals: {
             opensNewTab: element.getAttribute("target") === "_blank",
             hasProgress: PROGRESS_PATTERN.test(text),
-            hasRewardBadge: paragraphTexts.some((value) => /^\+\s*[\d,]+/.test(value)),
+            hasRewardBadge:
+              rewardPoints !== null || paragraphTexts.some((value) => /^\+\s*[\d,]+/.test(value)),
             clickOnlyCue: CLICK_ONLY_PATTERN.test(text) || /[?&]rnoreward=1(?:&|$)/i.test(url ?? ""),
             completed: completedFromPageState(text),
           },
