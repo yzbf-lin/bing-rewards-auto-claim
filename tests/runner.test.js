@@ -221,6 +221,9 @@ test("passes the manual current-tab context to catalog and action operations", a
   const calls = [];
   const context = { targetTabId: 42 };
   const driver = {
+    async showProgress(receivedContext) {
+      calls.push(["progress", receivedContext]);
+    },
     async loadCatalog(receivedContext) {
       calls.push(["catalog", receivedContext]);
       return {
@@ -254,6 +257,7 @@ test("passes the manual current-tab context to catalog and action operations", a
   await runner.run("manual", context);
 
   assert.deepEqual(calls, [
+    ["progress", context],
     ["catalog", context],
     ["link", context],
     ["restore", context],

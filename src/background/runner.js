@@ -35,6 +35,13 @@ export function createClaimRunner({
     };
 
     await storage.set({ currentRun: run });
+    if (typeof driver.showProgress === "function") {
+      try {
+        await driver.showProgress(context);
+      } catch (error) {
+        logger.error("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
+      }
+    }
     const stored = await storage.get("taskMemory");
     let taskMemory = stored.taskMemory ?? {};
     const runDateKey = beijingDateKey(startedAt);

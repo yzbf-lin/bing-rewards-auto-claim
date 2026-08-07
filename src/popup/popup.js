@@ -98,7 +98,7 @@ runButton.addEventListener("click", async () => {
       targetTabId: activeTab?.id,
     });
     if (!response?.ok) throw new Error(response?.error || "启动失败");
-    feedback.textContent = "领取任务已完成。";
+    feedback.textContent = "任务已启动，请在页面右上角查看实时进度。";
   } catch (error) {
     feedback.textContent = `运行失败：${error.message}`;
   }

@@ -1,5 +1,6 @@
 import { createChromeDriver } from "./chrome-driver.js";
 import { createClaimRunner } from "./runner.js";
+import { beginManualRun } from "./manual-run.js";
 import { nextBeijingRunAt, shouldCatchUp } from "./scheduler.js";
 import { fetchLatestRelease } from "./update-checker.js";
 
@@ -121,11 +122,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type !== "RUN_CLAIM_NOW") return false;
 
-  runner.run("manual", { targetTabId: message.targetTabId })
-    .then(async (run) => {
-      await consumePendingAutomaticRun();
-      sendResponse({ ok: true, run });
-    })
-    .catch((error) => sendResponse({ ok: false, error: error.message }));
-  return true;
+  const { response } = beginManualRun({
+    runner,
+    targetTabId: message.targetTabId,
+    consumePendingAutomaticRun,
+    logger: console,
+  });
+  sendResponse(response);
+  return false;
 });

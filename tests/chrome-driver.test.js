@@ -183,7 +183,7 @@ test("opens a link in the background and closes it after load", async () => {
   assert.deepEqual(fake.removed, [1]);
 });
 
-test("loads catalogs and opens links in the supplied current tab", async () => {
+test("loads catalogs in background tabs and opens actions in the supplied current tab", async () => {
   const dashboardEntry = {
     id: "dashboard-entry-0",
     section: "积分首页",
@@ -208,15 +208,22 @@ test("loads catalogs and opens links in the supplied current tab", async () => {
   const result = await driver.executeLink(catalog.entries[0], { targetTabId: 99 });
 
   assert.deepEqual(fake.updates, [
-    { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
-    { tabId: 99, options: { url: "https://rewards.bing.com/dashboard?section=dailyset", active: true } },
     { tabId: 99, options: { url: dashboardEntry.url, active: true } },
   ]);
   assert.equal(result.finalUrl, dashboardEntry.url);
-  assert.deepEqual(fake.removed, []);
+  assert.deepEqual(fake.removed, [1, 2]);
   assert.deepEqual(fake.injections, [
     { tabId: 99, files: ["src/content/progress-overlay.js"] },
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+  ]);
+});
+
+test("injects the progress panel before a manual run navigates", async () => {
+  const fake = chromeFake({ missingSections: [], entries: [] });
+  fake.seedTab({ id: 99, url: "https://rewards.bing.com/earn" });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  assert.equal(await driver.showProgress({ targetTabId: 99 }), true);
+  assert.deepEqual(fake.injections, [
     { tabId: 99, files: ["src/content/progress-overlay.js"] },
   ]);
 });
