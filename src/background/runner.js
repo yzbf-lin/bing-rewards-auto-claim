@@ -4,7 +4,19 @@ import { classifyEntry } from "../shared/task-policy.js";
 import { rememberTask, taskMemoryKey } from "../shared/task-memory.js";
 
 function serializeError(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    if (typeof error.message === "string") return error.message;
+    if (typeof error.reason === "string") return error.reason;
+    if (typeof error.code === "string") return error.code;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "UNKNOWN_ERROR_OBJECT";
+    }
+  }
+  return String(error);
 }
 
 export function createClaimRunner({
@@ -39,7 +51,7 @@ export function createClaimRunner({
       try {
         await driver.showProgress(context);
       } catch (error) {
-        logger.error("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
+        logger.warn("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
       }
     }
     const stored = await storage.get("taskMemory");
@@ -157,7 +169,7 @@ export function createClaimRunner({
           };
           run.results.push(result);
           recordTask(entry, recognition, result.outcome);
-          logger.error("[Rewards Auto Claim] FAILED", result);
+          logger.warn(`[Rewards Auto Claim] FAILED: ${result.reason}`);
           run.currentStep.status = "failed";
         }
 
@@ -179,7 +191,7 @@ export function createClaimRunner({
         try {
           await driver.restore(context);
         } catch (error) {
-          logger.error("[Rewards Auto Claim] RESTORE_FAILED", serializeError(error));
+          logger.warn("[Rewards Auto Claim] RESTORE_FAILED", serializeError(error));
         }
       }
 
@@ -192,28 +204,32 @@ export function createClaimRunner({
         section: "运行状态",
         status: "failed",
       };
+      const reason = serializeError(error);
       const result = {
         scope: "page",
         title: "积分页面",
         outcome: "FAILED",
-        reason: serializeError(error),
+        reason,
         durationMs: now().getTime() - startedAt.getTime(),
       };
       run.results.push(result);
-      logger.error("[Rewards Auto Claim] ABORTED", result);
+      logger.warn(`[Rewards Auto Claim] ABORTED: ${reason}`);
       await storage.set({ currentRun: run, taskMemory });
     } finally {
       try {
         await driver.cleanup();
       } catch (error) {
-        logger.error("[Rewards Auto Claim] CLEANUP_FAILED", serializeError(error));
+        logger.warn("[Rewards Auto Claim] CLEANUP_FAILED", serializeError(error));
       }
     }
 
     run.finishedAt = now().toISOString();
     run.phase = "finished";
+    const failureReason = run.results.findLast((result) => result.outcome === "FAILED")?.reason;
     run.currentStep = {
-      title: run.status === "completed" ? "本轮任务检查完成" : "执行过程已中断",
+      title: run.status === "completed"
+        ? "本轮任务检查完成"
+        : `执行过程已中断：${failureReason || "未知原因"}`,
       section: "运行状态",
       status: run.status === "completed" ? "completed" : "failed",
     };

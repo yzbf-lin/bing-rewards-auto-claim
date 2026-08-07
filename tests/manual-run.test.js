@@ -19,7 +19,7 @@ test("responds immediately while the manual run continues independently", async 
     runner,
     targetTabId: 42,
     consumePendingAutomaticRun: async () => calls.push(["consume"]),
-    logger: { error() {} },
+    logger: { warn() {} },
   });
 
   assert.deepEqual(started.response, { ok: true, started: true });

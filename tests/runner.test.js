@@ -114,6 +114,32 @@ test("continues after one entry fails and always cleans up", async () => {
   assert.deepEqual(run.summary, { total: 2, completed: 1, skipped: 0, failed: 1 });
 });
 
+test("stores a readable abort reason without logging an extension error object", async () => {
+  const warnings = [];
+  const driver = {
+    async loadCatalog() {
+      throw { code: "CATALOG_UNAVAILABLE", detail: "missing catalog" };
+    },
+    async cleanup() {},
+  };
+  const runner = createClaimRunner({
+    driver,
+    storage: makeStorage(),
+    logger: {
+      info() {},
+      warn(...args) { warnings.push(args.join(" ")); },
+      error() { assert.fail("handled failures must not use console.error"); },
+    },
+  });
+
+  const run = await runner.run("manual");
+
+  assert.equal(run.status, "aborted");
+  assert.equal(run.results[0].reason, "CATALOG_UNAVAILABLE");
+  assert.match(run.currentStep.title, /CATALOG_UNAVAILABLE/);
+  assert.deepEqual(warnings, ["[Rewards Auto Claim] ABORTED: CATALOG_UNAVAILABLE"]);
+});
+
 test("returns the active run instead of starting a concurrent run", async () => {
   let releaseCatalog;
   let loads = 0;

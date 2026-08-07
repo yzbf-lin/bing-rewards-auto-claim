@@ -10,7 +10,7 @@ export function beginManualRun({
 }) {
   const completion = Promise.resolve(runner.run("manual", { targetTabId }))
     .then(() => consumePendingAutomaticRun())
-    .catch((error) => logger.error("[Rewards Auto Claim] MANUAL_RUN_FAILED", serializeError(error)));
+    .catch((error) => logger.warn("[Rewards Auto Claim] MANUAL_RUN_FAILED", serializeError(error)));
 
   return {
     response: { ok: true, started: true },
