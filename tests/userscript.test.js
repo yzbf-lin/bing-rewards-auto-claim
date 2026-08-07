@@ -58,6 +58,20 @@ test("userscript recognizes fully completed visible progress", () => {
   assert.equal(api.inferCompleted("每日活动 活动: 2/3"), false);
 });
 
+test("userscript reports an explicit reason for an interactive quiz", () => {
+  const api = loadApi();
+  const result = api.classifyEntry({
+    section: "每日活动",
+    title: "艺术叛逆者？",
+    text: "测试你对弗里达·卡罗的了解 +10",
+    kind: "link",
+    url: "https://www.bing.com/search?q=Frida&form=dsetqu&filters=BingQA_QuizLanding_Layout",
+    disabled: false,
+  });
+
+  assert.equal(result.reason, "INTERACTIVE_QUIZ");
+});
+
 test("userscript accepts Rewards redirects that add locale parameters", () => {
   const api = loadApi();
   assert.equal(
@@ -104,4 +118,36 @@ test("userscript clicks the original card link instead of navigating directly", 
   );
   assert.equal(element.clicked, true);
   assert.equal(attributes.get("target"), "_self");
+});
+
+test("userscript adds a newly unlocked quest step after rescanning", () => {
+  const api = loadApi();
+  const sourceEntry = {
+    source: "quest",
+    sourceUrl: "https://rewards.bing.com/earn/quest/spotify",
+  };
+  const first = {
+    section: "任务：免费 Spotify 播放列表",
+    title: "激活优惠",
+    kind: "link",
+    url: "https://www.bing.com/?form=ML2X8X",
+    source: "quest",
+    sourceUrl: sourceEntry.sourceUrl,
+  };
+  const second = {
+    ...first,
+    title: "在 Bing 上搜索",
+  };
+
+  const discovered = api.findNewQuestEntries([first], [first, second], sourceEntry);
+
+  assert.equal(discovered.length, 1);
+  assert.equal(discovered[0].title, "在 Bing 上搜索");
+  assert.equal(discovered[0].source, "quest");
+});
+
+test("userscript panel includes structured run logs", () => {
+  assert.match(source, /data-role="logs"/);
+  assert.match(source, /QUEST_RESCANNED/);
+  assert.match(source, /CARD_CLICK/);
 });

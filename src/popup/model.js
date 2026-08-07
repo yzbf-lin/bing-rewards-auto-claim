@@ -9,6 +9,7 @@ const REASON_LABELS = {
   FEATURE_MATCHED_ONE_STEP: "根据页面特征识别为单步任务",
   ALREADY_TRIGGERED_TODAY: "今天已经触发过",
   COMPLEX_TASK: "需要继续交互",
+  INTERACTIVE_QUIZ: "需要完成测验答题",
   COMPLETED: "此前已经完成",
   DISABLED: "当前不可用",
   NO_REWARD_SIGNAL: "没有明确积分奖励",

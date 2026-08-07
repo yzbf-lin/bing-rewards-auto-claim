@@ -114,6 +114,63 @@ test("continues after one entry fails and always cleans up", async () => {
   assert.deepEqual(run.summary, { total: 2, completed: 1, skipped: 0, failed: 1 });
 });
 
+test("rescans a quest after completion and executes a newly unlocked step", async () => {
+  const actions = [];
+  const first = {
+    id: "spotify-activate",
+    section: "任务：免费 Spotify 播放列表",
+    parentTitle: "免费 Spotify 播放列表",
+    title: "激活优惠",
+    text: "激活优惠",
+    kind: "link",
+    url: "https://www.bing.com/?form=ML2X8X",
+    disabled: false,
+    action: "quest-step",
+    source: "quest",
+    sourceUrl: "https://rewards.bing.com/earn/quest/spotify",
+  };
+  const second = {
+    ...first,
+    id: "spotify-search",
+    title: "在 Bing 上搜索",
+    text: "喜欢现场演出？及时获取门票",
+  };
+  let refreshCount = 0;
+  const driver = {
+    async loadCatalog() {
+      return { missingSections: [], entries: [first] };
+    },
+    async executeLink(entry) {
+      actions.push(`link:${entry.id}`);
+      return { finalUrl: entry.url };
+    },
+    async refreshQuest(entry) {
+      actions.push(`refresh:${entry.id}`);
+      refreshCount += 1;
+      return { missingSections: [], entries: refreshCount === 1 ? [first, second] : [second] };
+    },
+    async cleanup() {
+      actions.push("cleanup");
+    },
+  };
+  const runner = createClaimRunner({
+    driver,
+    storage: makeStorage(),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const run = await runner.run("manual");
+
+  assert.deepEqual(actions, [
+    "link:spotify-activate",
+    "refresh:spotify-activate",
+    "link:spotify-search",
+    "refresh:spotify-search",
+    "cleanup",
+  ]);
+  assert.deepEqual(run.summary, { total: 2, completed: 2, skipped: 0, failed: 0 });
+});
+
 test("stores a readable abort reason without logging an extension error object", async () => {
   const warnings = [];
   const driver = {

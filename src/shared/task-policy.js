@@ -77,7 +77,7 @@ export function analyzeEntryFeatures(entry) {
   );
   const hasRewardSignal = signals.hasRewardBadge === true || rewardPoints !== null;
   const opensNewTab = signals.opensNewTab === true;
-  const interactiveQuiz = /\bquiz\b/i.test(visibleContent) ||
+  const interactiveQuiz = /答题|测验|trivia|\bquiz\b/i.test(visibleContent) ||
     /[?&]form=dsetqu(?:&|$)|BingQA_QuizLanding/i.test(url);
   const complex = interactiveQuiz ||
     COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
@@ -108,6 +108,7 @@ export function analyzeEntryFeatures(entry) {
     navigationOnly,
     trustedDestination,
     opensNewTab,
+    interactiveQuiz,
     complex,
     declaredOneStep,
     confidence,
@@ -134,6 +135,10 @@ export function classifyEntry(entry) {
 
   if (!features.supported) {
     return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
+  }
+
+  if (features.interactiveQuiz) {
+    return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
   }
 
   if (features.complex || features.hasProgress) {

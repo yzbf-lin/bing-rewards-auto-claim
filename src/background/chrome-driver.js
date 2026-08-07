@@ -197,6 +197,33 @@ export function createChromeDriver({
       return combined;
     },
 
+    async refreshQuest(entry, { targetTabId } = {}) {
+      if (!entry.sourceUrl || !entry.parentTitle) {
+        return { entries: [], missingSections: [] };
+      }
+      const sourceTab = targetTabId
+        ? await navigateExistingTab(targetTabId, entry.sourceUrl)
+        : await createTab(entry.sourceUrl);
+      try {
+        if (!targetTabId) await waitForTabLoaded(sourceTab.id);
+        const catalog = await collectStableCatalog(
+          sourceTab.id,
+          collectQuestEntries,
+          [entry.parentTitle],
+        );
+        return {
+          entries: catalog.entries.map((candidate) => ({
+            ...candidate,
+            source: "quest",
+            sourceUrl: entry.sourceUrl,
+          })),
+          missingSections: catalog.missingSections,
+        };
+      } finally {
+        if (!targetTabId) await removeTab(sourceTab.id);
+      }
+    },
+
     async executeLink(entry, { targetTabId } = {}) {
       const sourceUrl = entry.sourceUrl ?? REWARDS_URL;
       const collector = entry.source === "dashboard"

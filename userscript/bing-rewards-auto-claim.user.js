@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.1
+// @version      0.3.2
 // @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
 // @author       yzbf-lin
 // @license      MIT
@@ -22,7 +22,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.1";
+  const VERSION = "0.3.2";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -56,6 +56,7 @@
     FEATURE_MATCHED_ONE_STEP: "根据页面特征识别为单步任务",
     ALREADY_TRIGGERED_TODAY: "今天已经触发过",
     COMPLEX_TASK: "需要继续交互",
+    INTERACTIVE_QUIZ: "需要完成测验答题",
     COMPLETED: "此前已经完成",
     DISABLED: "当前不可用",
     NO_REWARD_SIGNAL: "没有明确积分奖励",
@@ -91,6 +92,17 @@
     writeValue(STATE_KEY, state);
     renderPanel(state);
     return state;
+  }
+
+  function appendLog(state, event, details = {}) {
+    const record = {
+      at: new Date().toISOString(),
+      event,
+      details,
+    };
+    state.logs = [...(state.logs ?? []), record].slice(-200);
+    console.info(`[Rewards Auto Claim] ${event}`, JSON.stringify(details));
+    return record;
   }
 
   function beijingDateKey(date = new Date()) {
@@ -151,7 +163,7 @@
     );
     const hasRewardSignal = signals.hasRewardBadge === true || rewardPoints !== null;
     const opensNewTab = signals.opensNewTab === true;
-    const interactiveQuiz = /\bquiz\b/i.test(visibleContent) ||
+    const interactiveQuiz = /答题|测验|trivia|\bquiz\b/i.test(visibleContent) ||
       /[?&]form=dsetqu(?:&|$)|BingQA_QuizLanding/i.test(url);
     const complex = interactiveQuiz ||
       COMPLEX_TASK_PATTERNS.some((pattern) => pattern.test(searchable));
@@ -177,6 +189,7 @@
       supported,
       completed,
       hasProgress,
+      interactiveQuiz,
       complex,
       declaredOneStep,
       genericOneStep:
@@ -195,6 +208,9 @@
     if (features.completed) return { decision: "SKIPPED", reason: "COMPLETED", rewardPoints };
     if (!features.supported) {
       return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
+    }
+    if (features.interactiveQuiz) {
+      return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
     }
     if (features.complex || features.hasProgress) {
       return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
@@ -557,6 +573,11 @@
       });
     });
     state.summary = summarizeResults(state.results);
+    appendLog(state, "CATALOG_SOURCE_LOADED", {
+      source,
+      entries: catalog.entries.length,
+      missingSections: catalog.missingSections,
+    });
   }
 
   function storeTaskResult(state, entry, recognition, outcome, reason, startedAt = Date.now()) {
@@ -574,6 +595,23 @@
     );
     writeValue(MEMORY_KEY, memory);
     state.summary = summarizeResults(state.results);
+    appendLog(state, `ENTRY_${outcome}`, {
+      title: entry.title,
+      section: entry.section,
+      reason,
+    });
+  }
+
+  function findNewQuestEntries(existingEntries, refreshedEntries, sourceEntry) {
+    const knownKeys = new Set(existingEntries.map((entry) => taskMemoryKey(entry)));
+    return refreshedEntries
+      .map((entry) => ({ ...entry, source: "quest", sourceUrl: sourceEntry.sourceUrl }))
+      .filter((entry) => {
+        const key = taskMemoryKey(entry);
+        if (knownKeys.has(key)) return false;
+        knownKeys.add(key);
+        return true;
+      });
   }
 
   function forceWindowOpenIntoCurrentTab() {
@@ -605,6 +643,20 @@
     );
     state.index += 1;
     state.pending = null;
+    if (outcome === "COMPLETED" && pending.entry.source === "quest") {
+      state.phase = "rescan-quest";
+      state.questRescan = {
+        sourceUrl: pending.entry.sourceUrl,
+        parentTitle: pending.entry.parentTitle,
+      };
+      appendLog(state, "QUEST_RESCAN_STARTED", {
+        parentTitle: pending.entry.parentTitle,
+      });
+      setState(state);
+      if (navigateCurrentTab(pending.entry.sourceUrl)) return;
+      await resumePhase(state);
+      return;
+    }
     state.phase = "execute";
     setState(state);
     await executeCatalog(state);
@@ -633,6 +685,11 @@
     }
 
     state.phase = "execute-button-wait";
+    appendLog(state, "CARD_CLICK", {
+      kind: "button",
+      title: entry.title,
+      sourceUrl: entry.sourceUrl || REWARDS_URL,
+    });
     setState(state);
     const restoreWindowOpen = forceWindowOpenIntoCurrentTab();
     const activated = await activateRewardsButton(matches[0].id);
@@ -672,6 +729,12 @@
     }
 
     state.phase = "execute-link-wait";
+    appendLog(state, "CARD_CLICK", {
+      kind: "link",
+      title: entry.title,
+      sourceUrl: entry.sourceUrl || REWARDS_URL,
+      destination: matches[0].url,
+    });
     setState(state);
     const restoreWindowOpen = forceWindowOpenIntoCurrentTab();
     const sourceUrl = location.href;
@@ -714,6 +777,11 @@
       }
 
       state.pending = { entry, recognition, startedAt: Date.now() };
+      appendLog(state, "ENTRY_ACTIVATING", {
+        title: entry.title,
+        section: entry.section,
+        kind: entry.kind,
+      });
       if (entry.kind === "link") {
         state.phase = "execute-link";
         setState(state);
@@ -746,6 +814,7 @@
     if (state.trigger !== "manual") {
       writeValue(AUTO_DATE_KEY, beijingDateKey());
     }
+    appendLog(state, "RUN_FINISHED", state.summary);
     setState(state);
   }
 
@@ -768,6 +837,7 @@
       section: "运行状态",
       status: "failed",
     };
+    appendLog(state, "RUN_ABORTED", { reason });
     setState(state);
     console.warn(`[Rewards Auto Claim] ABORTED: ${reason}`);
   }
@@ -803,6 +873,26 @@
   }
 
   async function resumePhase(state) {
+    if (state.phase === "rescan-quest") {
+      const rescan = state.questRescan;
+      if (!rescan?.sourceUrl || !rescan.parentTitle) throw new Error("QUEST_RESCAN_STATE_MISSING");
+      if (navigateCurrentTab(rescan.sourceUrl)) return;
+      setCurrentStep(state, rescan.parentTitle, "重新识别已解锁任务");
+      const refreshed = await collectStableCatalog(collectQuestEntries, [rescan.parentTitle]);
+      const discovered = findNewQuestEntries(state.catalog, refreshed.entries, rescan);
+      if (discovered.length > 0) state.catalog.splice(state.index, 0, ...discovered);
+      appendLog(state, "QUEST_RESCANNED", {
+        parentTitle: rescan.parentTitle,
+        discovered: discovered.length,
+        total: state.catalog.length,
+      });
+      state.questRescan = null;
+      state.phase = "execute";
+      setState(state);
+      await executeCatalog(state);
+      return;
+    }
+
     if (state.phase === "scan-quest") {
       const quest = state.quests[state.questIndex];
       if (!quest) {
@@ -886,6 +976,7 @@
       questIndex: 0,
       index: 0,
       pending: null,
+      questRescan: null,
       currentStep: {
         title: "正在识别积分入口",
         section: "任务识别",
@@ -894,6 +985,11 @@
         total: 0,
       },
       results: [],
+      logs: [{
+        at: startedAt.toISOString(),
+        event: "RUN_STARTED",
+        details: { trigger },
+      }],
       summary: { total: 0, completed: 0, skipped: 0, failed: 0 },
     };
   }
@@ -922,6 +1018,7 @@
         <section class="brac-progress" data-role="progress" hidden><small data-role="progress-meta"></small><strong data-role="progress-title"></strong></section>
         <section class="brac-summary"><div><small>最近结果</small><strong data-role="summary">完成 0 · 跳过 0 · 失败 0</strong><small data-role="memory">已识别 0 个任务入口</small></div><time data-role="finished"></time></section>
         <div class="brac-results" data-role="results"></div>
+        <details class="brac-logs"><summary>运行日志</summary><pre data-role="logs">暂无日志</pre></details>
       </div>`;
   }
 
@@ -936,6 +1033,7 @@
       header,.brac-schedule,.brac-summary{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{margin:2px 0 0;font-size:22px}small{display:block;color:#667085;font-size:11px;font-weight:650}header span{border:1px solid #d0d5dd;border-radius:999px;padding:6px 10px;background:#fff;color:#475467;font-size:12px}
       .brac-schedule,.brac-summary{margin-top:16px;border:1px solid #e4e7ec;border-radius:12px;padding:13px;background:#fff;font-size:12px}.brac-run{width:100%;min-height:44px;margin-top:14px;border:0;border-radius:10px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}.brac-run:disabled{opacity:.55;cursor:wait}
       .brac-progress{margin-top:12px;border:1px solid #84adff;border-radius:12px;padding:12px 14px;background:#eff8ff}.brac-progress[hidden]{display:none}.brac-progress strong{display:block;margin-top:4px;color:#1849a9;font-size:14px}.brac-summary strong{display:block;margin:3px 0;font-size:13px}.brac-summary time{color:#667085;font-size:11px}.brac-results{display:grid;gap:8px;margin-top:14px}.brac-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-left:3px solid #98a2b3;padding:8px 9px;background:#fff;font-size:11px}.brac-item[data-outcome="COMPLETED"]{border-left-color:#079455}.brac-item[data-outcome="FAILED"]{border-left-color:#d92d20}.brac-item strong{display:block;font-size:12px}.brac-item small{margin-top:3px}.brac-outcome{flex:none;color:#475467}
+      .brac-logs{margin-top:14px;border:1px solid #e4e7ec;border-radius:10px;padding:10px;background:#fff;font-size:12px}.brac-logs summary{cursor:pointer;font-weight:700}.brac-logs pre{overflow:auto;max-height:220px;margin:10px 0 0;white-space:pre-wrap;color:#475467;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
       .brac-toggle{position:absolute;top:8px;right:8px;z-index:2;width:28px;height:28px;border:1px solid #d0d5dd;border-radius:50%;background:#fff;color:#475467;cursor:pointer}:host(.collapsed){width:48px;height:48px}:host(.collapsed) .brac-body{display:none}:host(.collapsed) .brac-toggle{top:0;right:0;width:44px;height:44px;font-size:0}:host(.collapsed) .brac-toggle::after{content:"积";font-size:14px;font-weight:700;color:#175cd3}
     </style>${panelMarkup()}`;
     shadow.querySelector('[data-role="run"]').addEventListener("click", () => startRun("manual"));
@@ -995,6 +1093,13 @@
       item.append(detail, outcome);
       results.append(item);
     });
+    const logs = state?.logs ?? [];
+    root.querySelector('[data-role="logs"]').textContent = logs.length > 0
+      ? logs.slice(-40).map((record) => {
+        const time = new Date(record.at).toLocaleTimeString("zh-CN", { hour12: false });
+        return `${time} ${record.event} ${JSON.stringify(record.details ?? {})}`;
+      }).join("\n")
+      : "暂无日志";
   }
 
   function scheduleAutomaticRun() {
@@ -1020,6 +1125,7 @@
     analyzeEntryFeatures,
     classifyEntry,
     activateRewardsLink,
+    findNewQuestEntries,
     beijingDateKey,
     isAfterBeijingRunTime,
     urlsMatchPage,

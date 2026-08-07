@@ -188,6 +188,48 @@ test("expands earn quest parents into one-click child tasks", async () => {
   ]);
 });
 
+test("rescans a quest source for newly unlocked steps", async () => {
+  const questStep = {
+    id: "quest-entry-0",
+    section: "任务：免费 Spotify 播放列表",
+    parentTitle: "免费 Spotify 播放列表",
+    title: "在 Bing 上搜索",
+    text: "喜欢现场演出？及时获取门票",
+    kind: "link",
+    url: "https://www.bing.com/?form=ML2X8X",
+    disabled: false,
+    action: "quest-step",
+  };
+  const sourceEntry = {
+    ...questStep,
+    title: "激活优惠",
+    source: "quest",
+    sourceUrl: "https://rewards.bing.com/earn/quest/spotify",
+  };
+  const fake = chromeFake(
+    { missingSections: [], entries: [] },
+    { missingSections: [], entries: [] },
+    { missingSections: [], entries: [questStep] },
+  );
+  fake.seedTab({ id: 99, url: "https://www.bing.com/?form=ML2X8X" });
+  const driver = createChromeDriver({
+    chromeApi: fake.api,
+    delay: async () => {},
+    catalogAttempts: 3,
+  });
+
+  const refreshed = await driver.refreshQuest(sourceEntry, { targetTabId: 99 });
+
+  assert.deepEqual(refreshed.entries, [{
+    ...questStep,
+    source: "quest",
+    sourceUrl: sourceEntry.sourceUrl,
+  }]);
+  assert.deepEqual(fake.updates, [
+    { tabId: 99, options: { url: sourceEntry.sourceUrl, active: true } },
+  ]);
+});
+
 test("opens a link in the background and closes it after load", async () => {
   const entry = {
     id: "reward-entry-3-0",

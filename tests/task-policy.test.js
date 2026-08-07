@@ -70,22 +70,22 @@ test("skips cards without an explicit points reward", () => {
 
 test("skips search, quiz, puzzle, purchase and streak tasks", () => {
   const cases = [
-    entry({ title: "每日搜索", url: "https://www.bing.com/search?q=test" }),
-    entry({ title: "参加知识测验" }),
-    entry({ title: "完成此拼图", url: "https://www.bing.com/spotlight/imagepuzzle" }),
-    entry({ title: "购买 Game Pass" }),
-    entry({ title: "连续签到 7 天" }),
-    entry({
+    [entry({ title: "每日搜索", url: "https://www.bing.com/search?q=test" }), "COMPLEX_TASK"],
+    [entry({ title: "参加知识测验" }), "INTERACTIVE_QUIZ"],
+    [entry({ title: "完成此拼图", url: "https://www.bing.com/spotlight/imagepuzzle" }), "COMPLEX_TASK"],
+    [entry({ title: "购买 Game Pass" }), "COMPLEX_TASK"],
+    [entry({ title: "连续签到 7 天" }), "COMPLEX_TASK"],
+    [entry({
       title: "开始使用 Rewards",
       text: "开始使用 Rewards +1320 2/7 个任务",
       url: "https://rewards.bing.com/earn/quest/example_punchcard",
-    }),
+    }), "COMPLEX_TASK"],
   ];
 
-  for (const candidate of cases) {
+  for (const [candidate, expectedReason] of cases) {
     const result = classifyEntry(candidate);
     assert.equal(result.decision, "SKIPPED");
-    assert.equal(result.reason, "COMPLEX_TASK");
+    assert.equal(result.reason, expectedReason);
   }
 });
 
@@ -194,7 +194,7 @@ test("skips an interactive daily-activity quiz", () => {
     })),
     {
       decision: "SKIPPED",
-      reason: "COMPLEX_TASK",
+      reason: "INTERACTIVE_QUIZ",
       rewardPoints: 10,
     },
   );
@@ -314,6 +314,6 @@ test("classifies the observed Rewards mix without skipping direct point links", 
   ]);
   assert.deepEqual(interactiveLinks.map((candidate) => classifyEntry(candidate).reason), [
     "COMPLEX_TASK",
-    "COMPLEX_TASK",
+    "INTERACTIVE_QUIZ",
   ]);
 });

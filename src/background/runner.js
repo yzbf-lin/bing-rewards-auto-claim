@@ -158,6 +158,30 @@ export function createClaimRunner({
           recordTask(entry, recognition, result.outcome);
           logger.info("[Rewards Auto Claim] COMPLETED", result);
           run.currentStep.status = "completed";
+
+          if (entry.source === "quest" && typeof driver.refreshQuest === "function") {
+            try {
+              const refreshed = await driver.refreshQuest(entry, context);
+              const knownKeys = new Set(catalog.entries.map((candidate) => taskMemoryKey(candidate)));
+              const discovered = (refreshed.entries ?? []).filter((candidate) => {
+                const key = taskMemoryKey(candidate);
+                if (knownKeys.has(key)) return false;
+                knownKeys.add(key);
+                return true;
+              });
+              if (discovered.length > 0) {
+                catalog.entries.splice(entryIndex + 1, 0, ...discovered);
+                run.progress.total = catalog.entries.length;
+              }
+              logger.info("[Rewards Auto Claim] QUEST_RESCANNED", {
+                parentTitle: entry.parentTitle,
+                discovered: discovered.length,
+                total: catalog.entries.length,
+              });
+            } catch (error) {
+              logger.warn("[Rewards Auto Claim] QUEST_RESCAN_FAILED", serializeError(error));
+            }
+          }
         } catch (error) {
           const result = {
             ...entry,
