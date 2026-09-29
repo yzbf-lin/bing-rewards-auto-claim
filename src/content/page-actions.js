@@ -118,8 +118,28 @@ export function collectRewardsEntries() {
 
 export function collectDashboardEntries() {
   const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
-  const elements = Array.from(document.querySelectorAll("a[href], button"));
+  const elements = [...new Set([
+    ...document.querySelectorAll("a[href], button"),
+    ...document.querySelectorAll('[role="button"]'),
+  ])];
   const entries = [];
+  let claimablePoints = null;
+  const claimScopes = new Set();
+  const claimPattern = /^(?:(?:可[领領]取(?:[积積]分|[点點][数數])?|claimable(?:\s+points?)?|points?\s+(?:available\s+)?to\s+claim|available\s+to\s+claim)\s*[:：]?\s*)+([\d,]+)/i;
+  const claimContext = (element) => {
+    const label = normalize(element.innerText || element.textContent || element.getAttribute("aria-label"));
+    if (!/可[领領]取|[领領]取|claim/i.test(label)) return null;
+    let scope = element;
+    for (let depth = 0; scope && depth < 5; depth += 1, scope = scope.parentElement) {
+      if (["BODY", "MAIN", "HTML"].includes(scope.tagName)) break;
+      const text = normalize(scope.innerText || scope.textContent);
+      // Never associate the claim action with the neighboring spendable balance.
+      if (/可用[积積]分|available\s+points|redeem|兑换|兌換/i.test(text)) break;
+      const match = text.match(claimPattern);
+      if (match) return { scope, text, points: Number(match[1].replaceAll(",", "")) };
+    }
+    return null;
+  };
   const completedFromPageState = (value) => {
     const progressValues = [...value.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
       .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
@@ -155,14 +175,23 @@ export function collectDashboardEntries() {
     );
   };
 
+  // Clear stale IDs even on cards that became hidden, disabled or zero-balance.
   elements.forEach((element) => {
-    const text = normalize(element.innerText || element.textContent);
+    element.removeAttribute("data-rewards-auto-id");
+    element.removeAttribute("data-rewards-auto-action");
+  });
+  elements.forEach((element) => {
+    if (element.hidden || element.closest?.('[hidden], [aria-hidden="true"]') ||
+        (element.getClientRects && element.getClientRects().length === 0)) return;
+    const claim = claimContext(element);
+    if (claim) {
+      claimablePoints = Math.max(claimablePoints ?? 0, claim.points);
+      if (claim.points <= 0 || claimScopes.has(claim.scope)) return;
+      claimScopes.add(claim.scope);
+    }
+    const text = claim?.text || normalize(element.innerText || element.textContent);
     const group = element.closest?.('[role="group"]');
     const section = groupName(group) || "积分首页";
-    const claimMatch = element.tagName === "BUTTON"
-      ? text.match(/可领取(?:\s+可领取)?\s+([\d,]+)\s+领取/i)
-      : null;
-    const claimablePoints = claimMatch ? Number(claimMatch[1].replaceAll(",", "")) : 0;
     const dailyRewardPoints = section === "每日活动"
       ? Array.from(element.querySelectorAll("p"))
         .map((paragraph) => normalize(paragraph.textContent))
@@ -170,8 +199,8 @@ export function collectDashboardEntries() {
         .map((value) => value.match(/^\+?\s*([\d,]{1,9})(?:\s*(?:积分|points?))?$/i))
         .find(Boolean)
       : null;
-    const detectedRewardPoints = claimablePoints > 0
-      ? claimablePoints
+    const detectedRewardPoints = claim
+      ? claim.points
       : dailyRewardPoints
         ? Number(dailyRewardPoints[1].replaceAll(",", ""))
         : null;
@@ -182,7 +211,7 @@ export function collectDashboardEntries() {
     const imageTitle = normalize(element.querySelector("img[alt]")?.getAttribute("alt"));
     const paragraphTitle = normalize(element.querySelector("p")?.textContent);
     const ariaTitle = normalize(element.getAttribute("aria-label"));
-    const title = claimablePoints > 0
+    const title = claim
       ? "领取待领取积分"
       : imageTitle || paragraphTitle || ariaTitle || text.slice(0, 80) || "未命名入口";
     const restrictionText = /需要.+级别|等级不足|level required/i.test(text);
@@ -194,18 +223,20 @@ export function collectDashboardEntries() {
     );
 
     element.setAttribute("data-rewards-auto-id", id);
-    if (claimablePoints > 0) {
+    if (claim) {
       element.setAttribute("data-rewards-auto-action", "claim-points");
+    } else {
+      element.removeAttribute("data-rewards-auto-action");
     }
     entries.push({
       id,
-      section: claimablePoints > 0 ? "待领取积分" : section,
+      section: claim ? "待领取积分" : section,
       title,
       text,
-      kind: element.tagName === "A" ? "link" : "button",
-      url: element.tagName === "A" ? element.href || element.getAttribute("href") : null,
+      kind: !claim && element.tagName === "A" ? "link" : "button",
+      url: !claim && element.tagName === "A" ? element.href || element.getAttribute("href") : null,
       disabled,
-      action: claimablePoints > 0 ? "claim-points" : null,
+      action: claim ? "claim-points" : null,
       rewardPoints: detectedRewardPoints,
       signals: {
         opensNewTab: element.getAttribute("target") === "_blank",
@@ -219,7 +250,7 @@ export function collectDashboardEntries() {
     });
   });
 
-  return { entries, missingSections: [] };
+  return { entries, missingSections: [], claimablePoints };
 }
 
 export function collectQuestEntries(parentTitle) {
@@ -298,17 +329,32 @@ export function collectQuestEntries(parentTitle) {
 
 export async function activateRewardsButton(entryId) {
   const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
-  if (!element || element.tagName !== "BUTTON") return false;
+  if (!element || element.disabled || element.hasAttribute("disabled") ||
+      element.getAttribute("aria-disabled") === "true" || element.hidden ||
+      element.closest?.('[hidden], [aria-hidden="true"]') ||
+      (element.getClientRects && element.getClientRects().length === 0)) return false;
   const action = element.getAttribute("data-rewards-auto-action");
+  if (element.tagName !== "BUTTON" && action !== "claim-points") return false;
+  if (element.tagName === "A") element.setAttribute("target", "_self");
+  element.querySelectorAll?.("a[target]").forEach((link) => link.removeAttribute("target"));
   element.click();
 
   if (action === "claim-points") {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const confirmButton = Array.from(document.querySelectorAll("button")).find((button) => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const buttons = [...new Set([
+        ...document.querySelectorAll("button"),
+        ...document.querySelectorAll('[role="button"]'),
+      ])];
+      const confirmButton = buttons.find((button) => {
         const text = String(button.innerText || button.textContent || "")
           .replace(/\s+/g, " ")
           .trim();
-        return text === "领取积分" && Boolean(button.closest?.('[role="dialog"]'));
+        return /^(?:[领領]取(?:[积積]分|[点點][数數])?|claim(?:\s+(?:points|now))?)$/i.test(text) &&
+          Boolean(button.closest?.('[role="dialog"], dialog, [aria-modal="true"]')) &&
+          !button.disabled && !button.hidden && !button.hasAttribute("disabled") &&
+          button.getAttribute("aria-disabled") !== "true" &&
+          !button.closest?.('[hidden], [aria-hidden="true"]') &&
+          (!button.getClientRects || button.getClientRects().length > 0);
       });
       if (confirmButton) {
         confirmButton.click();
@@ -316,7 +362,8 @@ export async function activateRewardsButton(entryId) {
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return false;
+    // Some versions claim immediately. The caller must still verify the balance.
+    return true;
   }
 
   return true;
@@ -324,7 +371,10 @@ export async function activateRewardsButton(entryId) {
 
 export function activateRewardsLink(entryId) {
   const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
-  if (!element || element.tagName !== "A") return null;
+  if (!element || element.tagName !== "A" || element.hidden ||
+      element.getAttribute("aria-disabled") === "true" || element.hasAttribute("disabled") ||
+      element.closest?.('[hidden], [aria-hidden="true"]') ||
+      (element.getClientRects && element.getClientRects().length === 0)) return null;
   const url = element.href || element.getAttribute("href");
   element.removeAttribute("target");
   element.setAttribute("target", "_self");

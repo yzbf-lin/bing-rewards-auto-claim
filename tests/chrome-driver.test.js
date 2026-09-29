@@ -137,7 +137,7 @@ test("merges quick dashboard links into the catalog", async () => {
     {
       ...dashboardEntry,
       source: "dashboard",
-      sourceUrl: "https://rewards.bing.com/dashboard?section=dailyset",
+      sourceUrl: "https://rewards.bing.com/dashboard",
     },
   ]);
   assert.deepEqual(fake.removed, [1, 2]);
@@ -280,7 +280,7 @@ test("loads catalogs and opens actions in the supplied current tab without creat
 
   assert.deepEqual(fake.updates, [
     { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
-    { tabId: 99, options: { url: "https://rewards.bing.com/dashboard?section=dailyset", active: true } },
+    { tabId: 99, options: { url: "https://rewards.bing.com/dashboard", active: true } },
   ]);
   assert.equal(result.finalUrl, dashboardEntry.url);
   assert.deepEqual(fake.linkActivations, [
@@ -288,9 +288,9 @@ test("loads catalogs and opens actions in the supplied current tab without creat
   ]);
   assert.deepEqual(fake.removed, []);
   assert.deepEqual(fake.injections, [
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"] },
   ]);
 });
 
@@ -301,8 +301,174 @@ test("injects the progress panel before a manual run navigates", async () => {
 
   assert.equal(await driver.showProgress({ targetTabId: 99 }), true);
   assert.deepEqual(fake.injections, [
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"] },
   ]);
+});
+
+test("does not attempt progress injection on stores, internal pages, or unrelated hosts", async () => {
+  for (const url of [
+    "https://chromewebstore.google.com/detail/example/abc",
+    "https://chrome.google.com/webstore/detail/example/abc",
+    "https://microsoftedge.microsoft.com/addons/detail/example/abc",
+    "edge://extensions/", "chrome://extensions/", "about:blank",
+    "https://example.com/", "https://bing.com.example.com/", "http://www.bing.com/",
+  ]) {
+    const fake = chromeFake({ entries: [], missingSections: [] });
+    fake.seedTab({ id: 99, url });
+    let attempts = 0;
+    fake.api.scripting.executeScript = async () => {
+      attempts++;
+      throw new Error("The extensions gallery cannot be scripted.");
+    };
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+    assert.equal(await driver.showProgress({ targetTabId: 99 }), false);
+    assert.equal(attempts, 0, url);
+  }
+});
+
+test("waits for the committed Rewards page when navigating away from an extension store", async () => {
+  for (const withPendingUrl of [true, false]) {
+    const fake = chromeFake({ entries: [], missingSections: [] });
+    fake.seedTab({ id: 99, url: "https://microsoftedge.microsoft.com/addons/" });
+    const listeners = new Set();
+    fake.api.tabs.onUpdated = {
+      addListener: listener => listeners.add(listener),
+      removeListener: listener => listeners.delete(listener),
+    };
+    const update = fake.api.tabs.update;
+    fake.api.tabs.update = async (tabId, options) => {
+      const oldTab = await fake.api.tabs.get(tabId);
+      // tabs.update may finish before the old completed document is replaced.
+      fake.seedTab({ ...oldTab, ...(withPendingUrl ? { pendingUrl: options.url } : {}) });
+      setImmediate(async () => {
+        await update(tabId, options);
+        fake.seedTab({ id: tabId, url: options.url });
+        const loaded = await fake.api.tabs.get(tabId);
+        for (const listener of [...listeners]) listener(tabId, { status: "complete" }, loaded);
+      });
+      return oldTab;
+    };
+    const execute = fake.api.scripting.executeScript;
+    const injectedUrls = [];
+    fake.api.scripting.executeScript = async options => {
+      const tab = await fake.api.tabs.get(options.target.tabId);
+      injectedUrls.push(tab.url);
+      if (!tab.url.startsWith("https://rewards.bing.com/")) {
+        throw new Error("The extensions gallery cannot be scripted.");
+      }
+      return execute(options);
+    };
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 500, catalogAttempts: 2 });
+    const catalog = await driver.loadCatalog({ targetTabId: 99 });
+    assert.deepEqual(catalog.entries, []);
+    assert.ok(injectedUrls.length > 0);
+    assert.ok(injectedUrls.every(url => url.startsWith("https://rewards.bing.com/")));
+    assert.deepEqual(fake.removed, []);
+    assert.equal(listeners.size, 0);
+  }
+});
+
+test("does not collect page data after a redirect to the Microsoft sign-in page", async () => {
+  const fake = chromeFake({ entries: [], missingSections: [] });
+  fake.seedTab({ id: 99, url: "https://www.bing.com/" });
+  fake.api.tabs.update = async tabId => {
+    const tab = { id: tabId, status: "complete", url: "https://login.live.com/login.srf" };
+    fake.seedTab(tab);
+    return tab;
+  };
+  let attempts = 0;
+  fake.api.scripting.executeScript = async () => { attempts++; throw new Error("Cannot access contents of url"); };
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+  await assert.rejects(driver.loadCatalog({ targetTabId: 99 }), /SCRIPTING_PAGE_UNSUPPORTED/);
+  assert.equal(attempts, 0);
+});
+
+test("observes a fast navigation that redirects back to the previous localized URL", async () => {
+  const fake = chromeFake({ entries: [], missingSections: [] });
+  const localizedUrl = "https://rewards.bing.com/earn/?cc=cn";
+  fake.seedTab({ id: 99, url: localizedUrl });
+  const listeners = new Set();
+  fake.api.tabs.onUpdated = {
+    addListener: listener => listeners.add(listener),
+    removeListener: listener => listeners.delete(listener),
+  };
+  fake.api.tabs.update = async tabId => {
+    const loaded = { id: tabId, status: "complete", url: localizedUrl };
+    fake.seedTab(loaded);
+    for (const listener of [...listeners]) listener(tabId, { status: "complete" }, loaded);
+    return loaded;
+  };
+  const driver = createChromeDriver({ chromeApi: fake.api, timeoutMs: 80 });
+  assert.equal((await driver.restore({ targetTabId: 99 })).url, localizedUrl);
+  assert.equal(listeners.size, 0);
+});
+
+test("removes navigation listeners when the browser rejects a tab update", async () => {
+  const fake = chromeFake({ entries: [], missingSections: [] });
+  fake.seedTab({ id: 99, url: "https://chromewebstore.google.com/" });
+  const listeners = new Set();
+  fake.api.tabs.onUpdated = fake.api.tabs.onRemoved = {
+    addListener: listener => listeners.add(listener),
+    removeListener: listener => listeners.delete(listener),
+  };
+  fake.api.tabs.update = async () => { throw new Error("TAB_UPDATE_FAILED"); };
+  const driver = createChromeDriver({ chromeApi: fake.api, timeoutMs: 80 });
+  await assert.rejects(driver.restore({ targetTabId: 99 }), /TAB_UPDATE_FAILED/);
+  assert.equal(listeners.size, 0);
+  assert.deepEqual(fake.injections, []);
+});
+
+test("solves a puzzle after the source card click and preserves its verified result", async () => {
+  const entry = { id: "puzzle", section: "每日活动", title: "拼图", text: "拼图 +5", kind: "link", url: "https://www.bing.com/spotlight/imagepuzzle", source: "dashboard", sourceUrl: "https://rewards.bing.com/dashboard" };
+  const fake = chromeFake({ entries: [], missingSections: [] }, { entries: [entry], missingSections: [] });
+  const execute = fake.api.scripting.executeScript;
+  const solvers = [];
+  fake.api.scripting.executeScript = async (options) => {
+    if (options.func?.name === "solveImagePuzzle") { solvers.push(options.target.tabId); return [{ result: { solved: true, moves: 15 } }]; }
+    return execute(options);
+  };
+  const result = await createChromeDriver({ chromeApi: fake.api, delay: async () => {} }).executeLink(entry);
+  assert.equal(solvers.length, 1);
+  assert.equal(result.reason, "PUZZLE_COMPLETED");
+  assert.equal(result.puzzleMoves, 15);
+});
+
+test("claims are successful only after the pending balance decreases", async () => {
+  const entry = { id: "claim", section: "待领取积分", title: "领取待领取积分", text: "可领取 30 领取", kind: "button", action: "claim-points", rewardPoints: 30, source: "dashboard", sourceUrl: "https://rewards.bing.com/dashboard" };
+  for (const remaining of [0, 30, null]) {
+    const fake = chromeFake({ entries: [], missingSections: [] }, { entries: [entry], missingSections: [] });
+    const execute = fake.api.scripting.executeScript;
+    let clicked = false;
+    fake.api.scripting.executeScript = async (options) => {
+      if (options.func?.name === "activateRewardsButton") clicked = true;
+      if (clicked && options.func?.name === "collectDashboardEntries") return [{ result: { entries: [], missingSections: [], claimablePoints: remaining } }];
+      return execute(options);
+    };
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 2 });
+    if (remaining === 0) {
+      const result = await driver.executeButton(entry);
+      assert.equal(result.reason, "POINTS_CLAIMED");
+      assert.equal(result.claimedPoints, 30);
+    } else {
+      await assert.rejects(driver.executeButton(entry), /CLAIM_NOT_CONFIRMED/);
+    }
+    assert.deepEqual(fake.removed, [1]);
+  }
+});
+
+test("final dashboard scan waits for a known balance instead of accepting a loading shell", async () => {
+  for (const eventualBalance of [25, 0, null]) {
+    const fake = chromeFake({ entries: [], missingSections: [] });
+    let reads = 0;
+    fake.api.scripting.executeScript = async () => [{ result: {
+      entries: [], missingSections: [], claimablePoints: ++reads > 3 ? eventualBalance : null,
+    } }];
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 6 });
+    if (eventualBalance === null) await assert.rejects(driver.refreshDashboard(), /CLAIM_BALANCE_UNAVAILABLE/);
+    else assert.equal((await driver.refreshDashboard()).claimablePoints, eventualBalance);
+    assert.ok(reads >= 4);
+    assert.deepEqual(fake.removed, [1]);
+  }
 });
 
 test("re-collects and activates a unique button", async () => {
@@ -355,6 +521,6 @@ test("restores the supplied current tab to the Rewards earn page", async () => {
     { tabId: 99, options: { url: "https://rewards.bing.com/earn", active: true } },
   ]);
   assert.deepEqual(fake.injections, [
-    { tabId: 99, files: ["src/content/progress-overlay.js"] },
+    { tabId: 99, files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"] },
   ]);
 });

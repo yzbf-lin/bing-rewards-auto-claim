@@ -5,18 +5,31 @@ import {
   collectQuestEntries,
   collectRewardsEntries,
 } from "../content/page-actions.js";
+import { solveImagePuzzle } from "../content/image-puzzle.js";
+import { analyzeEntryFeatures } from "../shared/task-policy.js";
 
 const REWARDS_URL = "https://rewards.bing.com/earn";
-const DASHBOARD_URL = "https://rewards.bing.com/dashboard?section=dailyset";
+const DASHBOARD_URL = "https://rewards.bing.com/dashboard";
 const CATALOG_SOURCES = [
   { key: "earn", url: REWARDS_URL, collector: collectRewardsEntries },
   { key: "dashboard", url: DASHBOARD_URL, collector: collectDashboardEntries },
 ];
 
+function canScriptRewardsPage(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" &&
+      (url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"));
+  } catch {
+    return false;
+  }
+}
+
 function catalogSignature(catalog) {
   return JSON.stringify({
     missingSections: catalog.missingSections,
     progress: catalog.progress ?? null,
+    claimablePoints: catalog.claimablePoints ?? null,
     entries: catalog.entries.map(({ id, section, title, text, kind, url, disabled, action }) => ({
       id,
       section,
@@ -39,11 +52,28 @@ export function createChromeDriver({
 }) {
   const createdTabs = new Set();
 
+  const executeRewardsScript = async (options) => {
+    const tab = await chromeApi.tabs.get(options.target.tabId);
+    if (!canScriptRewardsPage(tab.url) ||
+        (tab.pendingUrl && !canScriptRewardsPage(tab.pendingUrl))) {
+      throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
+    }
+    try {
+      return await chromeApi.scripting.executeScript(options);
+    } catch (error) {
+      // The user can navigate away between the URL check and browser injection.
+      if (error?.message?.includes("The extensions gallery cannot be scripted")) {
+        throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
+      }
+      throw error;
+    }
+  };
+
   const ensureProgressOverlay = async (tabId) => {
     try {
-      await chromeApi.scripting.executeScript({
+      await executeRewardsScript({
         target: { tabId },
-        files: ["src/content/progress-overlay.js"],
+        files: ["src/content/floating-widget.js", "src/content/progress-overlay.js"],
       });
       return true;
     } catch {
@@ -68,7 +98,7 @@ export function createChromeDriver({
     return tab;
   };
 
-  const waitForTabLoaded = (tabId) => new Promise((resolve, reject) => {
+  const waitForTabLoaded = (tabId, { previousUrl, navigate } = {}) => new Promise((resolve, reject) => {
     let settled = false;
     const timeoutId = setTimeout(() => finish(reject, new Error("TAB_LOAD_TIMEOUT")), timeoutMs);
 
@@ -81,7 +111,7 @@ export function createChromeDriver({
       callback(value);
     };
     const onUpdated = (updatedTabId, changeInfo, tab) => {
-      if (updatedTabId === tabId && changeInfo.status === "complete") finish(resolve, tab);
+      if (updatedTabId === tabId && changeInfo.status === "complete" && !tab.pendingUrl) finish(resolve, tab);
     };
     const onRemoved = (removedTabId) => {
       if (removedTabId === tabId) finish(reject, new Error("TAB_CLOSED"));
@@ -89,16 +119,22 @@ export function createChromeDriver({
 
     chromeApi.tabs.onUpdated.addListener(onUpdated);
     chromeApi.tabs.onRemoved.addListener(onRemoved);
-    chromeApi.tabs.get(tabId)
-      .then((tab) => {
-        if (tab.status === "complete") finish(resolve, tab);
+    Promise.resolve()
+      .then(async () => {
+        // Listen before navigating so a fast redirect cannot complete unnoticed.
+        if (navigate) await navigate();
+        if (settled) return;
+        const tab = await chromeApi.tabs.get(tabId);
+        // tabs.update can resolve while tabs.get still describes the old document.
+        if (tab.status === "complete" && !tab.pendingUrl &&
+            (!previousUrl || tab.url !== previousUrl)) finish(resolve, tab);
       })
       .catch((error) => finish(reject, error));
   });
 
   const navigateExistingTab = async (tabId, url, active = true) => {
     const currentTab = await chromeApi.tabs.get(tabId);
-    if (currentTab.url === url) {
+    if (currentTab.url === url && !currentTab.pendingUrl) {
       const loadedTab = currentTab.status === "complete"
         ? currentTab
         : waitForTabLoaded(tabId);
@@ -107,14 +143,16 @@ export function createChromeDriver({
       return result;
     }
 
-    await chromeApi.tabs.update(tabId, { url, active });
-    const loadedTab = await waitForTabLoaded(tabId);
+    const loadedTab = await waitForTabLoaded(tabId, {
+      previousUrl: currentTab.url === url ? undefined : currentTab.url,
+      navigate: () => chromeApi.tabs.update(tabId, { url, active }),
+    });
     if (active) await ensureProgressOverlay(tabId);
     return loadedTab;
   };
 
   const collectOnce = async (tabId, collector, args = []) => {
-    const results = await chromeApi.scripting.executeScript({
+    const results = await executeRewardsScript({
       target: { tabId },
       func: collector,
       args,
@@ -124,19 +162,23 @@ export function createChromeDriver({
     return catalog;
   };
 
-  const collectStableCatalog = async (tabId, collector, args = []) => {
+  const collectStableCatalog = async (tabId, collector, args = [], requireClaimBalance = false) => {
     let previousSignature = null;
     let latest = null;
 
     for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
       latest = await collectOnce(tabId, collector, args);
       const signature = catalogSignature(latest);
-      if (latest.missingSections.length === 0 && signature === previousSignature) return latest;
+      const ready = !requireClaimBalance || typeof latest.claimablePoints === "number";
+      if (ready && latest.missingSections.length === 0 && signature === previousSignature) return latest;
       previousSignature = signature;
       if (attempt < catalogAttempts - 1) await delay(500);
     }
 
     if (!latest) throw new Error("CATALOG_UNAVAILABLE");
+    if (requireClaimBalance && typeof latest.claimablePoints !== "number") {
+      throw new Error("CLAIM_BALANCE_UNAVAILABLE");
+    }
     return latest;
   };
 
@@ -228,6 +270,23 @@ export function createChromeDriver({
       }
     },
 
+    async refreshDashboard({ targetTabId } = {}) {
+      const tab = targetTabId
+        ? await navigateExistingTab(targetTabId, DASHBOARD_URL)
+        : await createTab(DASHBOARD_URL);
+      try {
+        if (!targetTabId) await waitForTabLoaded(tab.id);
+        await delay(settleDelayMs);
+        const catalog = await collectStableCatalog(tab.id, collectDashboardEntries, [], true);
+        return {
+          ...catalog,
+          entries: catalog.entries.map((entry) => ({ ...entry, source: "dashboard", sourceUrl: DASHBOARD_URL })),
+        };
+      } finally {
+        if (!targetTabId) await removeTab(tab.id);
+      }
+    },
+
     async executeLink(entry, { targetTabId } = {}) {
       const sourceUrl = entry.sourceUrl ?? REWARDS_URL;
       const collector = entry.source === "dashboard"
@@ -267,7 +326,7 @@ export function createChromeDriver({
         if (matches.length !== 1) throw new Error("LINK_NOT_UNIQUE");
 
         const activationSource = await chromeApi.tabs.get(sourceTab.id);
-        const activation = await chromeApi.scripting.executeScript({
+        const activation = await executeRewardsScript({
           target: { tabId: sourceTab.id },
           func: activateRewardsLink,
           args: [matches[0].id],
@@ -296,7 +355,22 @@ export function createChromeDriver({
             );
           }
         }
-        return { finalUrl: resultTab.url ?? activationResult.url ?? entry.url };
+        const finalUrl = resultTab.url ?? activationResult.url ?? entry.url;
+        if (analyzeEntryFeatures(entry).imagePuzzle) {
+          if (!analyzeEntryFeatures({ kind: "link", url: finalUrl }).imagePuzzle) {
+            throw new Error("PUZZLE_PAGE_UNAVAILABLE");
+          }
+          const results = await executeRewardsScript({
+            target: { tabId: resultTab.id },
+            func: solveImagePuzzle,
+          });
+          const solved = results?.[0]?.result;
+          if (!solved?.solved) throw new Error("PUZZLE_NOT_CONFIRMED");
+          // Allow the page's native completion request to finish before closing it.
+          await delay(settleDelayMs);
+          return { finalUrl, reason: "PUZZLE_COMPLETED", puzzleMoves: solved.moves };
+        }
+        return { finalUrl };
       } finally {
         chromeApi.tabs.onCreated.removeListener(onCreated);
         if (openedTabId) await removeTab(openedTabId);
@@ -338,14 +412,28 @@ export function createChromeDriver({
           );
         }
         if (matches.length !== 1) throw new Error("BUTTON_NOT_UNIQUE");
+        if (matches[0].disabled) throw new Error("BUTTON_DISABLED");
 
-        const activation = await chromeApi.scripting.executeScript({
+        const activation = await executeRewardsScript({
           target: { tabId: sourceTab.id },
           func: activateRewardsButton,
           args: [matches[0].id],
         });
         if (activation?.[0]?.result !== true) throw new Error("BUTTON_ACTIVATION_FAILED");
         await delay(settleDelayMs);
+
+        if (entry.action === "claim-points") {
+          const before = matches[0].rewardPoints;
+          for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
+            const after = await collectOnce(sourceTab.id, collectDashboardEntries);
+            if (typeof after.claimablePoints === "number" && after.claimablePoints >= 0 &&
+                after.claimablePoints < before) {
+              return { finalUrl: sourceUrl, reason: "POINTS_CLAIMED", claimedPoints: before - after.claimablePoints };
+            }
+            if (attempt < catalogAttempts - 1) await delay(500);
+          }
+          throw new Error("CLAIM_NOT_CONFIRMED");
+        }
 
         const resultTab = openedTabId
           ? await waitForTabLoaded(openedTabId)

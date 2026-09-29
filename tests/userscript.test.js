@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { collectDashboardEntries, activateRewardsButton } from "../src/content/page-actions.js";
+import { solveImagePuzzle } from "../src/content/image-puzzle.js";
 
 const source = await readFile(
   new URL("../userscript/bing-rewards-auto-claim.user.js", import.meta.url),
@@ -109,6 +111,12 @@ test("userscript keeps a non-daily interactive quiz as a manual task", () => {
   assert.equal(result.reason, "INTERACTIVE_QUIZ");
 });
 
+test("userscript recognizes Spotlight puzzles for actual solving", () => {
+  const result = loadApi().classifyEntry({ section: "每日活动", title: "拼图", text: "拼图 +5", kind: "link", url: "https://www.bing.com/spotlight/imagepuzzle" });
+  assert.equal(result.decision, "ELIGIBLE");
+  assert.equal(result.reason, "IMAGE_PUZZLE");
+});
+
 test("userscript keeps a traditional-Chinese install card as a manual task", () => {
   const api = loadApi();
   const result = api.classifyEntry({
@@ -152,6 +160,7 @@ test("userscript clicks the original card link instead of navigating directly", 
     href: "https://www.bing.com/search?q=ancient+design",
     clicked: false,
     getAttribute: (name) => attributes.get(name) ?? null,
+    hasAttribute: (name) => attributes.has(name),
     setAttribute: (name, value) => attributes.set(name, value),
     removeAttribute: (name) => attributes.delete(name),
     click() {
@@ -209,4 +218,132 @@ test("userscript panel includes structured run logs", () => {
   assert.match(source, /data-role="logs"/);
   assert.match(source, /QUEST_RESCANNED/);
   assert.match(source, /CARD_CLICK/);
+});
+
+test("standalone userscript keeps injected page actions identical to the extension", () => {
+  const api = loadApi();
+  const normalized = (fn) => fn.toString().replace(/\s+/g, " ").trim();
+  for (const fn of [collectDashboardEntries, activateRewardsButton, solveImagePuzzle]) {
+    assert.equal(normalized(api[fn.name]), normalized(fn));
+  }
+});
+
+test("standalone userscript keeps the floating widget identical to the extension", async () => {
+  const widgetSource = await readFile(new URL("../src/content/floating-widget.js", import.meta.url), "utf8");
+  const context = vm.createContext({});
+  vm.runInContext(widgetSource, context);
+  const normalized = (fn) => fn.toString().replace(/\s+/g, " ").trim();
+  assert.equal(normalized(loadApi().createRewardsFloatingWidget), normalized(context.createRewardsFloatingWidget));
+});
+
+function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), location = { href: "https://rewards.bing.com/dashboard" } } = {}) {
+  let balance = points;
+  let clicks = 0;
+  let reads = 0;
+  const attributes = new Map();
+  const card = {
+    tagName: "BUTTON", parentElement: null,
+    get innerText() { return `可领取 ${balance} 领取`; },
+    getAttribute: (name) => attributes.get(name) ?? null,
+    setAttribute: (name, value) => attributes.set(name, value),
+    removeAttribute: (name) => attributes.delete(name),
+    hasAttribute: (name) => attributes.has(name),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    click() { clicks++; },
+  };
+  const confirm = {
+    tagName: "BUTTON", innerText: "领取积分",
+    closest: (selector) => selector.includes("dialog") ? {} : null,
+    getAttribute: () => null, hasAttribute: () => false,
+    click() { balance = 0; },
+  };
+  const document = {
+    getElementById: () => null,
+    querySelector: (selector) => selector.includes('data-rewards-auto-id') ? card : null,
+    querySelectorAll: (selector) => selector === "a[href], button" ? (++reads > unknownReads ? [card] : []) : selector === "button" && clicks ? [confirm] : [],
+  };
+  location.assign = (url) => { location.href = url; };
+  const overrides = {
+    document, location, window: { location, open() {} },
+    GM_getValue: (key, fallback) => store.has(key) ? structuredClone(store.get(key)) : fallback,
+    GM_setValue: (key, value) => store.set(key, structuredClone(value)),
+    setTimeout: (callback) => { callback(); return 1; },
+    console: { info() {}, warn() {} },
+  };
+  return { ...loadRuntime(overrides), store, location, get clicks() { return clicks; } };
+}
+
+test("userscript resumes its final dashboard scan after navigation and claims only once", async () => {
+  const location = { href: "https://www.bing.com/search?q=last-task" };
+  const first = claimRuntime({ location });
+  const state = first.api.createRun("automatic");
+  state.phase = "execute";
+  // A prior successful claim today must not suppress a new positive balance.
+  first.store.set("bingRewardsAutoClaimMemory", {
+    "dashboard|button|领取待领取积分|": { lastCompletedDate: first.api.beijingDateKey(new Date(state.startedAt)) },
+  });
+  await first.api.executeCatalog(state);
+  assert.equal(state.phase, "rescan-dashboard");
+  assert.equal(location.href, "https://rewards.bing.com/dashboard");
+  assert.equal(first.clicks, 0);
+
+  const next = claimRuntime({ location, store: first.store });
+  const restored = next.store.get("bingRewardsAutoClaimState");
+  await next.api.resumePhase(restored);
+  assert.equal(restored.results.length, 1);
+  assert.equal(restored.results[0].reason, "POINTS_CLAIMED");
+  assert.equal(next.clicks, 1);
+  assert.equal(restored.claimsRefreshed, true);
+  assert.equal(restored.phase, "returning");
+  assert.equal(location.href, "https://rewards.bing.com/earn");
+  await next.api.resumePhase(restored);
+  assert.equal(restored.status, "completed");
+  assert.equal(next.clicks, 1);
+});
+
+test("userscript does not turn a restored unconfirmed claim into success", async () => {
+  const runtime = claimRuntime();
+  const state = runtime.api.createRun("manual");
+  const entry = { ...runtime.api.collectDashboardEntries().entries[0], source: "dashboard", sourceUrl: runtime.location.href };
+  state.catalog = [entry];
+  state.pending = { entry, recognition: runtime.api.classifyEntry(entry), startedAt: Date.now(), claimBefore: 30 };
+  state.phase = "verify-claim";
+  state.claimsRefreshed = true;
+  await runtime.api.resumePhase(state);
+  assert.equal(state.results[0].outcome, "FAILED");
+  assert.equal(state.results[0].reason, "CLAIM_NOT_CONFIRMED");
+  assert.equal(runtime.clicks, 0);
+});
+
+test("userscript final scan waits for the claim balance to hydrate", async () => {
+  const runtime = claimRuntime({ unknownReads: 3 });
+  const state = runtime.api.createRun("manual");
+  state.phase = "rescan-dashboard";
+  await runtime.api.resumePhase(state);
+  assert.equal(state.results.length, 1);
+  assert.equal(state.results[0].reason, "POINTS_CLAIMED");
+  assert.equal(runtime.clicks, 1);
+});
+
+test("userscript reports an unavailable balance instead of assuming there is nothing to claim", async () => {
+  const runtime = claimRuntime({ unknownReads: Infinity });
+  const state = runtime.api.createRun("manual");
+  state.phase = "rescan-dashboard";
+  await assert.rejects(runtime.api.resumePhase(state), /CLAIM_BALANCE_UNAVAILABLE/);
+  assert.equal(runtime.clicks, 0);
+});
+
+test("userscript preserves verified puzzle completion after Bing redirects away", async () => {
+  const runtime = claimRuntime({ location: { href: "https://www.bing.com/spotlight?q=finished" } });
+  const state = runtime.api.createRun("manual");
+  const entry = { title: "拼图", text: "拼图 +5", kind: "link", url: "https://www.bing.com/spotlight/imagepuzzle", section: "每日活动" };
+  state.catalog = [entry];
+  state.pending = { entry, recognition: runtime.api.classifyEntry(entry), startedAt: Date.now() };
+  state.phase = "puzzle-completed";
+  await runtime.api.resumePhase(state);
+  assert.equal(state.results[0].outcome, "COMPLETED");
+  assert.equal(state.results[0].reason, "PUZZLE_COMPLETED");
+  assert.equal(state.phase, "rescan-dashboard");
+  assert.equal(runtime.location.href, "https://rewards.bing.com/dashboard");
 });

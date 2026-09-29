@@ -5,7 +5,20 @@ const OUTCOME_LABELS = {
 };
 
 const REASON_LABELS = {
+  SCRIPTING_PAGE_UNSUPPORTED: "当前页面无法运行积分脚本，请打开 Bing Rewards 页面并确认已登录后重试",
   ACTION_TRIGGERED: "已触发领取动作",
+  IMAGE_PUZZLE: "可自动完成的滑块拼图",
+  PUZZLE_COMPLETED: "拼图已完成并确认",
+  PUZZLE_LAYOUT_UNSUPPORTED: "拼图尚未加载或布局不受支持",
+  PUZZLE_PAGE_UNAVAILABLE: "未进入受支持的拼图页面",
+  PUZZLE_UNSOLVABLE: "当前拼图无法求解",
+  PUZZLE_SEARCH_LIMIT: "拼图求解已达到限制",
+  PUZZLE_STATE_CHANGED: "拼图状态发生变化，请重试",
+  PUZZLE_MOVE_FAILED: "拼图移动未生效，请重试",
+  PUZZLE_NOT_CONFIRMED: "未确认拼图完成，请重试",
+  POINTS_CLAIMED: "待领取积分已领取",
+  CLAIM_NOT_CONFIRMED: "待领取余额未减少，请检查页面后重试",
+  CLAIM_BALANCE_UNAVAILABLE: "未读取到待领取余额，请确认已登录并重试",
   FEATURE_MATCHED_ONE_STEP: "根据页面特征识别为单步任务",
   ALREADY_TRIGGERED_TODAY: "今天已经触发过",
   COMPLEX_TASK: "需要继续交互",

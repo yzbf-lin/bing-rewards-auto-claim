@@ -15,7 +15,10 @@ test("manifest uses minimal permissions and references existing files", async ()
   assert.equal(manifest.host_permissions.includes("<all_urls>"), false);
   await access(new URL(`../${manifest.background.service_worker}`, import.meta.url));
   await access(new URL(`../${manifest.action.default_popup}`, import.meta.url));
-  await access(new URL(`../${manifest.content_scripts[0].js[0]}`, import.meta.url));
+  assert.deepEqual(manifest.content_scripts[0].js, [
+    "src/content/floating-widget.js", "src/content/progress-overlay.js",
+  ]);
+  for (const file of manifest.content_scripts[0].js) await access(new URL(`../${file}`, import.meta.url));
   const embeddedResources = manifest.web_accessible_resources[0].resources;
   assert.equal(embeddedResources.includes("src/popup/popup.html"), true);
   assert.equal(embeddedResources.includes("src/popup/model.js"), true);
@@ -30,5 +33,5 @@ test("page progress panel embeds the same popup component", async () => {
   assert.match(source, /src\/popup\/popup\.html\?embedded=1/);
   assert.match(source, /document\.createElement\("iframe"\)/);
   assert.match(source, /globalThis\[INSTANCE_KEY\] = \{ ensureVisible \}/);
-  assert.doesNotMatch(source, /attachShadow/);
+  assert.match(source, /createRewardsFloatingWidget/);
 });

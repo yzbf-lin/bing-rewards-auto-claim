@@ -21,6 +21,14 @@ document.body.classList.toggle(
   "embedded",
   new URLSearchParams(location.search).get("embedded") === "1",
 );
+if (document.body.classList.contains("embedded")) {
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      window.parent.postMessage({ type: "BING_REWARDS_PANEL_CLOSE" }, "*");
+    }
+  });
+}
 extensionVersion.textContent = `v${chrome.runtime.getManifest().version}`;
 
 function resultItem(result) {

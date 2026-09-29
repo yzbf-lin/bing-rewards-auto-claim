@@ -321,6 +321,79 @@ test("collects a positive claimable-points button", () => {
   assert.equal(result.entries[0].action, "claim-points");
 });
 
+test("reads claim balances from the surrounding card without confusing available points", () => {
+  const claim = card({ tagName: "A", text: "领取", href: "https://rewards.bing.com/dashboard#claim" });
+  claim.parentElement = { innerText: "可领取\n1,250\n领取", parentElement: null };
+  const redeem = card({ tagName: "A", text: "兑换", href: "https://rewards.bing.com/redeem" });
+  redeem.parentElement = { innerText: "可用积分 4,383 兑换", parentElement: null };
+  installDocument([]);
+  document.querySelectorAll = (selector) => selector === "a[href], button" ? [claim, redeem] : [];
+  const result = collectDashboardEntries();
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].action, "claim-points");
+  assert.equal(result.entries[0].kind, "button");
+  assert.equal(result.entries[0].rewardPoints, 1250);
+  assert.equal(result.claimablePoints, 1250);
+  claim.parentElement.innerText = "可领取 0 领取";
+  assert.equal(collectDashboardEntries().entries.length, 0);
+  assert.equal(collectDashboardEntries().claimablePoints, 0);
+});
+
+test("recognizes role buttons, localized claim labels and excludes hidden cards", () => {
+  const claim = card({ tagName: "DIV", text: "可領取 25 點 領取" });
+  claim.setAttribute("role", "button");
+  const hidden = card({ tagName: "BUTTON", text: "Claimable points 900 Claim" });
+  hidden.hidden = true;
+  installDocument([]);
+  document.querySelectorAll = (selector) => selector === "a[href], button" ? [hidden] : [claim];
+  const result = collectDashboardEntries();
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.claimablePoints, 25);
+});
+
+test("does not mistake a task description promising points for the claim balance", () => {
+  const task = card({ text: "连续签到七天后可领取 100 积分", href: "https://rewards.bing.com/earn/quest/streak" });
+  installDocument([]);
+  document.querySelectorAll = (selector) => selector === "a[href], button" ? [task] : [];
+  const result = collectDashboardEntries();
+  assert.equal(result.claimablePoints, null);
+  assert.equal(result.entries.some((entry) => entry.action === "claim-points"), false);
+});
+
+test("activates claim links as actions and ignores disabled dialog controls", async () => {
+  const claim = card({ tagName: "A", text: "Claim" });
+  claim.setAttribute("target", "_blank");
+  const disabled = card({ tagName: "BUTTON", text: "Claim points", disabled: true });
+  const confirm = card({ tagName: "BUTTON", text: "領取積分" });
+  for (const button of [disabled, confirm]) button.closest = (selector) => selector.includes("dialog") ? {} : null;
+  claim.setAttribute("data-rewards-auto-id", "claim-link");
+  claim.setAttribute("data-rewards-auto-action", "claim-points");
+  installDocument([group("待领取积分", [claim])]);
+  document.querySelectorAll = () => [disabled, confirm];
+  assert.equal(await activateRewardsButton("claim-link"), true);
+  assert.equal(claim.clicked, true);
+  assert.equal(claim.getAttribute("target"), "_self");
+  assert.equal(confirm.clicked, true);
+  assert.equal(disabled.clicked, false);
+});
+
+test("recollecting a dashboard never activates an old hidden card with a reused ID", async () => {
+  for (const tagName of ["BUTTON", "A"]) {
+    const hidden = card({ tagName, text: "旧奖励 +5", href: "https://www.bing.com/search?q=old" });
+    const visible = card({ tagName, text: "当前奖励 +5", href: "https://www.bing.com/search?q=new" });
+    installDocument([group("每日活动", [hidden, visible])]);
+    document.querySelectorAll = (selector) => selector === "a[href], button" ? [hidden, visible] : [];
+    collectDashboardEntries();
+    hidden.hidden = true;
+    const { entries } = collectDashboardEntries();
+    assert.equal(entries.length, 1);
+    if (tagName === "BUTTON") await activateRewardsButton(entries[0].id);
+    else activateRewardsLink(entries[0].id);
+    assert.equal(hidden.clicked, false);
+    assert.equal(visible.clicked, true);
+  }
+});
+
 test("collects enabled and disabled one-click quest steps", () => {
   const enabled = card({
     text: "探索八月优惠",
@@ -369,7 +442,7 @@ test("collects enabled and disabled one-click quest steps", () => {
 test("confirms the claim-points dialog after activating its card", async () => {
   const claimable = card({ tagName: "BUTTON", text: "可领取 90 领取" });
   const confirm = card({ tagName: "BUTTON", text: "领取积分" });
-  confirm.closest = (selector) => selector === '[role="dialog"]' ? {} : null;
+  confirm.closest = (selector) => selector.includes("dialog") ? {} : null;
   const groups = [group("待领取积分", [claimable])];
   installDocument(groups);
   claimable.setAttribute("data-rewards-auto-id", "claimable-points");

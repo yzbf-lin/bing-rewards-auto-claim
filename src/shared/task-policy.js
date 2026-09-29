@@ -1,7 +1,7 @@
 const COMPLEX_TASK_PATTERNS = [
   /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
   /答题|测验|trivia/i,
-  /拼图|puzzle/i,
+  /拼[图圖]|puzzle/i,
   /投票|poll/i,
   /购买|購買|订阅|訂閱|purchase|subscribe/i,
   /下载|下載|安装|安裝|download|install/i,
@@ -62,6 +62,7 @@ export function analyzeEntryFeatures(entry) {
   const url = normalize(entry.url);
   const visibleContent = `${title} ${text}`;
   const searchable = `${title} ${text} ${url}`;
+  const puzzleTask = /拼[图圖]|puzzle/i.test(searchable);
   const declaredRewardPoints = Number(entry.rewardPoints);
   const rewardPoints = Number.isFinite(declaredRewardPoints) && declaredRewardPoints > 0
     ? declaredRewardPoints
@@ -70,6 +71,7 @@ export function analyzeEntryFeatures(entry) {
   const supported = SUPPORTED_KINDS.has(entry.kind);
   const navigationOnly = entry.kind === "link";
   const trustedDestination = navigationOnly && isTrustedDestination(url);
+  const imagePuzzle = trustedDestination && /^\/spotlight\/imagepuzzle\/?$/i.test(new URL(url).pathname);
   const completed = signals.completed ?? inferCompleted(searchable);
   const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
   const clickOnlyCue = signals.clickOnlyCue ?? (
@@ -108,6 +110,8 @@ export function analyzeEntryFeatures(entry) {
     hasRewardSignal,
     navigationOnly,
     trustedDestination,
+    imagePuzzle,
+    puzzleTask,
     opensNewTab,
     interactiveQuiz,
     complex,
@@ -139,11 +143,15 @@ export function classifyEntry(entry) {
     return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
   }
 
+  if (features.imagePuzzle && features.hasRewardSignal) {
+    return { decision: "ELIGIBLE", reason: "IMAGE_PUZZLE", rewardPoints };
+  }
+
   if (features.interactiveQuiz && !features.dailyActivityLink) {
     return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
   }
 
-  if ((features.complex && !features.dailyActivityLink) || features.hasProgress) {
+  if ((features.complex && (!features.dailyActivityLink || features.puzzleTask)) || features.hasProgress) {
     return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
   }
 

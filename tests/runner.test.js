@@ -2,6 +2,37 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createClaimRunner } from "../src/background/runner.js";
+import { taskMemoryKey } from "../src/shared/task-memory.js";
+
+test("rescans once after tasks and claims newly earned points despite earlier same-day claims", async () => {
+  const claim = { id: "claim", section: "待领取积分", title: "领取待领取积分", text: "可领取 30 领取", kind: "button", action: "claim-points", rewardPoints: 30 };
+  const actions = [];
+  const storage = makeStorage({ taskMemory: { [taskMemoryKey(claim)]: { lastCompletedDate: "2026-09-29" } } });
+  const driver = {
+    async loadCatalog() { return { entries: [{ id: "task", title: "今日主题", text: "今日主题 +5", kind: "link" }], missingSections: [] }; },
+    async executeLink() { actions.push("task"); return {}; },
+    async refreshDashboard() { actions.push("refresh"); return { entries: [claim], missingSections: [] }; },
+    async executeButton() { actions.push("claim"); return { reason: "POINTS_CLAIMED", claimedPoints: 30 }; },
+    async cleanup() {},
+  };
+  const runner = createClaimRunner({ driver, storage, logger: { info() {}, warn() {} }, now: () => new Date("2026-09-29T02:00:00Z") });
+  const run = await runner.run("automatic");
+  assert.deepEqual(actions, ["task", "refresh", "claim"]);
+  assert.equal(run.results.at(-1).reason, "POINTS_CLAIMED");
+  assert.equal(run.summary.completed, 2);
+});
+
+test("refreshes claim balance even when the initial catalog has no entries", async () => {
+  let refreshed = 0;
+  const driver = {
+    async loadCatalog() { return { entries: [], missingSections: [] }; },
+    async refreshDashboard() { refreshed++; return { entries: [], missingSections: [] }; },
+    async cleanup() {},
+  };
+  const runner = createClaimRunner({ driver, storage: makeStorage(), logger: { info() {}, warn() {} } });
+  await runner.run();
+  assert.equal(refreshed, 1);
+});
 
 function makeStorage(initialState = {}) {
   const writes = [];

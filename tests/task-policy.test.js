@@ -68,11 +68,11 @@ test("skips cards without an explicit points reward", () => {
   });
 });
 
-test("skips search, quiz, puzzle, purchase and streak tasks", () => {
+test("skips search, quiz, unsupported puzzle, purchase and streak tasks", () => {
   const cases = [
     [entry({ title: "每日搜索", url: "https://www.bing.com/search?q=test" }), "COMPLEX_TASK"],
     [entry({ title: "参加知识测验" }), "INTERACTIVE_QUIZ"],
-    [entry({ title: "完成此拼图", url: "https://www.bing.com/spotlight/imagepuzzle" }), "COMPLEX_TASK"],
+    [entry({ title: "完成此拼图", url: "https://www.bing.com/other-puzzle" }), "COMPLEX_TASK"],
     [entry({ title: "购买 Game Pass" }), "COMPLEX_TASK"],
     [entry({ title: "连续签到 7 天" }), "COMPLEX_TASK"],
     [entry({
@@ -87,6 +87,20 @@ test("skips search, quiz, puzzle, purchase and streak tasks", () => {
     assert.equal(result.decision, "SKIPPED");
     assert.equal(result.reason, expectedReason);
   }
+});
+
+test("routes the supported Spotlight puzzle to its solver, including daily activity cards", () => {
+  for (const section of ["日常任务", "每日活动"]) {
+    const result = classifyEntry(entry({
+      section,
+      title: "完成此拼图",
+      url: "https://www.bing.com/spotlight/imagepuzzle?form=reward",
+    }));
+    assert.equal(result.decision, "ELIGIBLE");
+    assert.equal(result.reason, "IMAGE_PUZZLE");
+  }
+  assert.equal(classifyEntry(entry({ title: "拼图", url: "https://evil.example/spotlight/imagepuzzle" })).decision, "SKIPPED");
+  assert.equal(classifyEntry(entry({ section: "每日活动", title: "其他拼图", url: "https://www.bing.com/other-puzzle" })).decision, "SKIPPED");
 });
 
 test("skips traditional-Chinese install tasks", () => {

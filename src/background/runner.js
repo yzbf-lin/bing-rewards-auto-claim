@@ -70,6 +70,10 @@ export function createClaimRunner({
 
     try {
       const catalog = await driver.loadCatalog(context);
+      const canRefreshClaims = typeof driver.refreshDashboard === "function";
+      if (canRefreshClaims) {
+        catalog.entries = (catalog.entries ?? []).filter((entry) => entry.action !== "claim-points");
+      }
       logger.info("[Rewards Auto Claim] CATALOG_LOADED", {
         entries: catalog.entries?.length ?? 0,
         missingSections: catalog.missingSections ?? [],
@@ -98,7 +102,22 @@ export function createClaimRunner({
       run.summary = summarizeResults(run.results);
       await storage.set({ currentRun: run });
 
-      for (const [entryIndex, entry] of (catalog.entries ?? []).entries()) {
+      let claimsRefreshed = !canRefreshClaims;
+      for (let entryIndex = 0; entryIndex < (catalog.entries ?? []).length || !claimsRefreshed; entryIndex += 1) {
+        if (entryIndex === catalog.entries.length && !claimsRefreshed) {
+          claimsRefreshed = true;
+          run.currentStep = { title: "正在检查本轮可领取积分", section: "待领取积分", status: "running" };
+          await storage.set({ currentRun: run });
+          try {
+            const refreshed = await driver.refreshDashboard(context);
+            catalog.entries.push(...refreshed.entries.filter((entry) => entry.action === "claim-points"));
+            run.progress.total = catalog.entries.length;
+          } catch (error) {
+            run.results.push({ scope: "section", section: "待领取积分", title: "积分领取检查", outcome: "FAILED", reason: serializeError(error), durationMs: 0 });
+          }
+          if (entryIndex >= catalog.entries.length) break;
+        }
+        const entry = catalog.entries[entryIndex];
         run.currentStep = {
           title: entry.title || "未命名入口",
           section: entry.section || "积分任务",
@@ -112,6 +131,7 @@ export function createClaimRunner({
         const previous = taskMemory[taskMemoryKey(entry)];
         const decision =
           trigger !== "manual" &&
+          entry.action !== "claim-points" &&
           recognition.decision === "ELIGIBLE" &&
           previous?.lastCompletedDate === runDateKey
             ? {
@@ -146,7 +166,7 @@ export function createClaimRunner({
             ? await driver.executeLink(entry, context)
             : await driver.executeButton(entry, context);
           let outcome = "COMPLETED";
-          let reason = "ACTION_TRIGGERED";
+          let reason = actionResult?.reason ?? "ACTION_TRIGGERED";
 
           if (entry.source === "quest" && typeof driver.refreshQuest === "function") {
             try {

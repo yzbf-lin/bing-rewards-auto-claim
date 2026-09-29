@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.3.5
-// @description  识别并处理 Bing Rewards 中只需打开或点击一次即可完成的积分入口。
+// @version      0.4.2
+// @description  自动完成 Bing Rewards 单步任务、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
 // @match        https://rewards.bing.com/*
@@ -22,21 +22,21 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.3.5";
+  const VERSION = "0.4.2";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
   const PANEL_ID = "bing-rewards-userscript-panel";
   const RUNNER_KEY = "__bingRewardsUserscriptRunner";
   const REWARDS_URL = "https://rewards.bing.com/earn";
-  const DASHBOARD_URL = "https://rewards.bing.com/dashboard?section=dailyset";
+  const DASHBOARD_URL = "https://rewards.bing.com/dashboard";
   const MAX_TASK_RECORDS = 200;
   const SETTLE_DELAY_MS = 1_800;
 
   const COMPLEX_TASK_PATTERNS = [
     /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
     /答题|测验|trivia/i,
-    /拼图|puzzle/i,
+    /拼[图圖]|puzzle/i,
     /投票|poll/i,
     /购买|購買|订阅|訂閱|purchase|subscribe/i,
     /下载|下載|安装|安裝|download|install/i,
@@ -53,6 +53,18 @@
   const TRACKING_PARAMETERS = new Set(["form", "ocid", "publ", "crea", "filters"]);
   const REASON_LABELS = {
     ACTION_TRIGGERED: "已触发领取动作",
+    IMAGE_PUZZLE: "可自动完成的滑块拼图",
+    PUZZLE_COMPLETED: "拼图已完成并确认",
+    PUZZLE_LAYOUT_UNSUPPORTED: "拼图尚未加载或布局不受支持",
+    PUZZLE_PAGE_UNAVAILABLE: "未进入受支持的拼图页面",
+    PUZZLE_UNSOLVABLE: "当前拼图无法求解",
+    PUZZLE_SEARCH_LIMIT: "拼图求解已达到限制",
+    PUZZLE_STATE_CHANGED: "拼图状态发生变化，请重试",
+    PUZZLE_MOVE_FAILED: "拼图移动未生效，请重试",
+    PUZZLE_NOT_CONFIRMED: "未确认拼图完成，请重试",
+    POINTS_CLAIMED: "待领取积分已领取",
+    CLAIM_NOT_CONFIRMED: "待领取余额未减少，请检查页面后重试",
+    CLAIM_BALANCE_UNAVAILABLE: "未读取到待领取余额，请确认已登录并重试",
     FEATURE_MATCHED_ONE_STEP: "根据页面特征识别为单步任务",
     ALREADY_TRIGGERED_TODAY: "今天已经触发过",
     COMPLEX_TASK: "需要继续交互",
@@ -150,6 +162,7 @@
     const url = normalize(entry.url);
     const visibleContent = `${title} ${text}`;
     const searchable = `${title} ${text} ${url}`;
+    const puzzleTask = /拼[图圖]|puzzle/i.test(searchable);
     const declaredRewardPoints = Number(entry.rewardPoints);
     const rewardPoints = Number.isFinite(declaredRewardPoints) && declaredRewardPoints > 0
       ? declaredRewardPoints
@@ -158,6 +171,7 @@
     const supported = SUPPORTED_KINDS.has(entry.kind);
     const navigationOnly = entry.kind === "link";
     const trustedDestination = navigationOnly && isTrustedDestination(url);
+    const imagePuzzle = trustedDestination && /^\/spotlight\/imagepuzzle\/?$/i.test(new URL(url).pathname);
     const completed = signals.completed ?? inferCompleted(searchable);
     const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
     const clickOnlyCue = signals.clickOnlyCue ?? (
@@ -192,6 +206,9 @@
       supported,
       completed,
       hasProgress,
+      hasRewardSignal,
+      imagePuzzle,
+      puzzleTask,
       interactiveQuiz,
       complex,
       dailyActivityLink,
@@ -213,10 +230,13 @@
     if (!features.supported) {
       return { decision: "SKIPPED", reason: "UNSUPPORTED_ENTRY_TYPE", rewardPoints };
     }
+    if (features.imagePuzzle && features.hasRewardSignal) {
+      return { decision: "ELIGIBLE", reason: "IMAGE_PUZZLE", rewardPoints };
+    }
     if (features.interactiveQuiz && !features.dailyActivityLink) {
       return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
     }
-    if ((features.complex && !features.dailyActivityLink) || features.hasProgress) {
+    if ((features.complex && (!features.dailyActivityLink || features.puzzleTask)) || features.hasProgress) {
       return { decision: "SKIPPED", reason: "COMPLEX_TASK", rewardPoints };
     }
     if (features.declaredOneStep) {
@@ -322,14 +342,81 @@
   }
 
   function collectDashboardEntries() {
+    const normalize = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+    const elements = [...new Set([
+      ...document.querySelectorAll("a[href], button"),
+      ...document.querySelectorAll('[role="button"]'),
+    ])];
     const entries = [];
-    Array.from(document.querySelectorAll("a[href], button")).forEach((element) => {
-      const text = normalize(element.innerText || element.textContent);
-      const section = groupName(element.closest?.('[role="group"]')) || "积分首页";
-      const claimMatch = element.tagName === "BUTTON"
-        ? text.match(/可领取(?:\s+可领取)?\s+([\d,]+)\s+领取/i)
-        : null;
-      const claimablePoints = claimMatch ? Number(claimMatch[1].replaceAll(",", "")) : 0;
+    let claimablePoints = null;
+    const claimScopes = new Set();
+    const claimPattern = /^(?:(?:可[领領]取(?:[积積]分|[点點][数數])?|claimable(?:\s+points?)?|points?\s+(?:available\s+)?to\s+claim|available\s+to\s+claim)\s*[:：]?\s*)+([\d,]+)/i;
+    const claimContext = (element) => {
+      const label = normalize(element.innerText || element.textContent || element.getAttribute("aria-label"));
+      if (!/可[领領]取|[领領]取|claim/i.test(label)) return null;
+      let scope = element;
+      for (let depth = 0; scope && depth < 5; depth += 1, scope = scope.parentElement) {
+        if (["BODY", "MAIN", "HTML"].includes(scope.tagName)) break;
+        const text = normalize(scope.innerText || scope.textContent);
+        // Never associate the claim action with the neighboring spendable balance.
+        if (/可用[积積]分|available\s+points|redeem|兑换|兌換/i.test(text)) break;
+        const match = text.match(claimPattern);
+        if (match) return { scope, text, points: Number(match[1].replaceAll(",", "")) };
+      }
+      return null;
+    };
+    const completedFromPageState = (value) => {
+      const progressValues = [...value.matchAll(/(\d+)\s*\/\s*(\d+)/g)]
+        .map((match) => ({ current: Number(match[1]), total: Number(match[2]) }))
+        .filter(({ current, total }) => Number.isFinite(current) && Number.isFinite(total) && total > 0);
+      const hasIncompleteProgress = progressValues.some(({ current, total }) => current < total);
+      const allProgressComplete = progressValues.length > 0 &&
+        progressValues.every(({ current, total }) => current >= total);
+      return allProgressComplete ||
+        (/已完成|已领取|completed|claimed/i.test(value) && !hasIncompleteProgress);
+    };
+
+    const groupName = (group) => {
+      if (!group) return "";
+      const directLabel = normalize(group.getAttribute("aria-label"));
+      if (directLabel) return directLabel;
+
+      const labelledBy = normalize(group.getAttribute("aria-labelledby"));
+      if (!labelledBy) return "";
+      return normalize(
+        labelledBy
+          .split(" ")
+          .map((id) => {
+            const labelElement = document.getElementById(id);
+            return (
+              labelElement?.getAttribute?.("aria-label") ||
+              labelElement?.getAttribute?.("title") ||
+              labelElement?.innerText ||
+              labelElement?.textContent
+            );
+          })
+          .filter(Boolean)
+          .join(" "),
+      );
+    };
+
+    // Clear stale IDs even on cards that became hidden, disabled or zero-balance.
+    elements.forEach((element) => {
+      element.removeAttribute("data-rewards-auto-id");
+      element.removeAttribute("data-rewards-auto-action");
+    });
+    elements.forEach((element) => {
+      if (element.hidden || element.closest?.('[hidden], [aria-hidden="true"]') ||
+          (element.getClientRects && element.getClientRects().length === 0)) return;
+      const claim = claimContext(element);
+      if (claim) {
+        claimablePoints = Math.max(claimablePoints ?? 0, claim.points);
+        if (claim.points <= 0 || claimScopes.has(claim.scope)) return;
+        claimScopes.add(claim.scope);
+      }
+      const text = claim?.text || normalize(element.innerText || element.textContent);
+      const group = element.closest?.('[role="group"]');
+      const section = groupName(group) || "积分首页";
       const dailyRewardPoints = section === "每日活动"
         ? Array.from(element.querySelectorAll("p"))
           .map((paragraph) => normalize(paragraph.textContent))
@@ -337,9 +424,11 @@
           .map((value) => value.match(/^\+?\s*([\d,]{1,9})(?:\s*(?:积分|points?))?$/i))
           .find(Boolean)
         : null;
-      const detectedRewardPoints = claimablePoints > 0
-        ? claimablePoints
-        : dailyRewardPoints ? Number(dailyRewardPoints[1].replaceAll(",", "")) : null;
+      const detectedRewardPoints = claim
+        ? claim.points
+        : dailyRewardPoints
+          ? Number(dailyRewardPoints[1].replaceAll(",", ""))
+          : null;
       const explicitReward = /\+\s*[\d,]{1,9}(?:\s*(?:积分|points?))?/i.test(text);
       if (!explicitReward && detectedRewardPoints === null) return;
 
@@ -347,35 +436,46 @@
       const imageTitle = normalize(element.querySelector("img[alt]")?.getAttribute("alt"));
       const paragraphTitle = normalize(element.querySelector("p")?.textContent);
       const ariaTitle = normalize(element.getAttribute("aria-label"));
+      const title = claim
+        ? "领取待领取积分"
+        : imageTitle || paragraphTitle || ariaTitle || text.slice(0, 80) || "未命名入口";
       const restrictionText = /需要.+级别|等级不足|level required/i.test(text);
+      const disabled = Boolean(
+        element.disabled ||
+          element.hasAttribute("disabled") ||
+          element.getAttribute("aria-disabled") === "true" ||
+          restrictionText,
+      );
+
       element.setAttribute("data-rewards-auto-id", id);
-      if (claimablePoints > 0) element.setAttribute("data-rewards-auto-action", "claim-points");
+      if (claim) {
+        element.setAttribute("data-rewards-auto-action", "claim-points");
+      } else {
+        element.removeAttribute("data-rewards-auto-action");
+      }
       entries.push({
         id,
-        section: claimablePoints > 0 ? "待领取积分" : section,
-        title: claimablePoints > 0
-          ? "领取待领取积分"
-          : imageTitle || paragraphTitle || ariaTitle || text.slice(0, 80) || "未命名入口",
+        section: claim ? "待领取积分" : section,
+        title,
         text,
-        kind: element.tagName === "A" ? "link" : "button",
-        url: element.tagName === "A" ? element.href || element.getAttribute("href") : null,
-        disabled: Boolean(
-          element.disabled || element.hasAttribute("disabled") ||
-          element.getAttribute("aria-disabled") === "true" || restrictionText
-        ),
-        action: claimablePoints > 0 ? "claim-points" : null,
+        kind: !claim && element.tagName === "A" ? "link" : "button",
+        url: !claim && element.tagName === "A" ? element.href || element.getAttribute("href") : null,
+        disabled,
+        action: claim ? "claim-points" : null,
         rewardPoints: detectedRewardPoints,
         signals: {
           opensNewTab: element.getAttribute("target") === "_blank",
-          hasProgress: PROGRESS_PATTERN.test(text),
+          hasProgress: /\d+\s*\/\s*\d+/.test(text),
           hasRewardBadge: explicitReward || detectedRewardPoints !== null,
-          clickOnlyCue: CLICK_ONLY_PATTERN.test(text) ||
+          clickOnlyCue:
+            /(?:点击|打开|访问).{0,12}(?:即可)?(?:完成|获得|领取|查看)/i.test(text) ||
             /[?&]rnoreward=1(?:&|$)/i.test(element.href ?? ""),
           completed: completedFromPageState(text),
         },
       });
     });
-    return { entries, missingSections: [] };
+
+    return { entries, missingSections: [], claimablePoints };
   }
 
   function collectQuestEntries(parentTitle) {
@@ -435,34 +535,160 @@
 
   async function activateRewardsButton(entryId) {
     const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
-    if (!element || element.tagName !== "BUTTON") return false;
+    if (!element || element.disabled || element.hasAttribute("disabled") ||
+        element.getAttribute("aria-disabled") === "true" || element.hidden ||
+        element.closest?.('[hidden], [aria-hidden="true"]') ||
+        (element.getClientRects && element.getClientRects().length === 0)) return false;
     const action = element.getAttribute("data-rewards-auto-action");
+    if (element.tagName !== "BUTTON" && action !== "claim-points") return false;
+    if (element.tagName === "A") element.setAttribute("target", "_self");
     element.querySelectorAll?.("a[target]").forEach((link) => link.removeAttribute("target"));
     element.click();
-    if (action !== "claim-points") return true;
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const confirmButton = Array.from(document.querySelectorAll("button")).find((button) => {
-        const text = normalize(button.innerText || button.textContent);
-        return text === "领取积分" && Boolean(button.closest?.('[role="dialog"]'));
-      });
-      if (confirmButton) {
-        confirmButton.click();
-        return true;
+    if (action === "claim-points") {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const buttons = [...new Set([
+          ...document.querySelectorAll("button"),
+          ...document.querySelectorAll('[role="button"]'),
+        ])];
+        const confirmButton = buttons.find((button) => {
+          const text = String(button.innerText || button.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim();
+          return /^(?:[领領]取(?:[积積]分|[点點][数數])?|claim(?:\s+(?:points|now))?)$/i.test(text) &&
+            Boolean(button.closest?.('[role="dialog"], dialog, [aria-modal="true"]')) &&
+            !button.disabled && !button.hidden && !button.hasAttribute("disabled") &&
+            button.getAttribute("aria-disabled") !== "true" &&
+            !button.closest?.('[hidden], [aria-hidden="true"]') &&
+            (!button.getClientRects || button.getClientRects().length > 0);
+        });
+        if (confirmButton) {
+          confirmButton.click();
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      await delay(100);
+      // Some versions claim immediately. The caller must still verify the balance.
+      return true;
     }
-    return false;
+
+    return true;
   }
 
   function activateRewardsLink(entryId) {
     const element = document.querySelector(`[data-rewards-auto-id="${entryId}"]`);
-    if (!element || element.tagName !== "A") return null;
+    if (!element || element.tagName !== "A" || element.hidden ||
+        element.getAttribute("aria-disabled") === "true" || element.hasAttribute("disabled") ||
+        element.closest?.('[hidden], [aria-hidden="true"]') ||
+        (element.getClientRects && element.getClientRects().length === 0)) return null;
     const url = element.href || element.getAttribute("href");
     element.removeAttribute("target");
     element.setAttribute("target", "_self");
     element.click();
     return { activated: true, url };
+  }
+
+  async function solveImagePuzzle({ waitAttempts = 60, pollMs = 100, moveDelayMs = 120 } = {}) {
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const success = () => {
+      const popup = document.getElementById("congrats");
+      return Boolean(popup && !popup.hidden && !popup.classList.contains("b_hide"));
+    };
+    const cells = () => Array.from(document.querySelectorAll("#tiles div.tile"));
+    const readBoard = () => cells().map((cell) => {
+      const image = cell.querySelector("img.tile");
+      if (!image) return -1;
+      const match = image.id?.match(/^img([0-7])$/);
+      return match ? Number(match[1]) : NaN;
+    });
+
+    if (success()) return { solved: true, moves: 0 };
+    for (let attempt = 0; cells().length === 0 && attempt < waitAttempts; attempt += 1) {
+      await pause(pollMs);
+    }
+    const boardCells = cells();
+    if (boardCells.length !== 9 || boardCells.some((cell, index) =>
+      Number(cell.getAttribute("x")) !== Math.floor(index / 3) ||
+      Number(cell.getAttribute("y")) !== index % 3
+    )) throw new Error("PUZZLE_LAYOUT_UNSUPPORTED");
+
+    // The revamped page uses the empty tile as a start button on the first click.
+    const start = document.getElementById("final_parentTile");
+    if (start) {
+      start.parentElement.click();
+      await pause(pollMs);
+    }
+    const initial = readBoard();
+    if (initial.length !== 9 || new Set(initial).size !== 9 ||
+        !initial.every((value) => Number.isInteger(value) && value >= -1 && value <= 7)) {
+      throw new Error("PUZZLE_LAYOUT_UNSUPPORTED");
+    }
+    const numbered = initial.filter((value) => value !== -1);
+    let inversions = 0;
+    numbered.forEach((value, index) => {
+      inversions += numbered.slice(index + 1).filter((other) => other < value).length;
+    });
+    if (inversions % 2) throw new Error("PUZZLE_UNSOLVABLE");
+
+    // IDA* with Manhattan distance bounds memory and yields the shortest legal path.
+    const searchBoard = [...initial];
+    const path = [];
+    const neighbors = Array.from({ length: 9 }, (_, index) =>
+      Array.from({ length: 9 }, (_, candidate) => candidate).filter((candidate) =>
+        Math.abs(Math.floor(index / 3) - Math.floor(candidate / 3)) +
+        Math.abs(index % 3 - candidate % 3) === 1
+      )
+    );
+    const distance = () => searchBoard.reduce((sum, value, index) => sum + (value === -1 ? 0 :
+      Math.abs(Math.floor(index / 3) - Math.floor(value / 3)) + Math.abs(index % 3 - value % 3)), 0);
+    let visited = 0;
+    const search = (empty, depth, bound, previous) => {
+      if (++visited > 500_000) throw new Error("PUZZLE_SEARCH_LIMIT");
+      const estimate = distance();
+      if (depth + estimate > bound) return depth + estimate;
+      if (estimate === 0) return true;
+      let nextBound = Infinity;
+      for (const next of neighbors[empty]) {
+        if (next === previous) continue;
+        [searchBoard[empty], searchBoard[next]] = [searchBoard[next], searchBoard[empty]];
+        path.push(next);
+        const result = search(next, depth + 1, bound, empty);
+        if (result === true) return true;
+        nextBound = Math.min(nextBound, result);
+        path.pop();
+        [searchBoard[empty], searchBoard[next]] = [searchBoard[next], searchBoard[empty]];
+      }
+      return nextBound;
+    };
+    let bound = distance();
+    while (bound <= 31) {
+      const result = search(initial.indexOf(-1), 0, bound, -1);
+      if (result === true) break;
+      bound = result;
+    }
+    if (bound > 31) throw new Error("PUZZLE_UNSOLVABLE");
+    // A random shuffle can already be ordered; a legal out-and-back fires the site's check.
+    if (path.length === 0) path.push(neighbors[8][0], 8);
+
+    const expected = [...initial];
+    let empty = expected.indexOf(-1);
+    for (const next of path) {
+      if (readBoard().some((value, index) => value !== expected[index])) {
+        throw new Error("PUZZLE_STATE_CHANGED");
+      }
+      cells()[next].click();
+      [expected[empty], expected[next]] = [expected[next], expected[empty]];
+      empty = next;
+      await pause(moveDelayMs);
+      if (!success() && readBoard().some((value, index) => value !== expected[index])) {
+        throw new Error("PUZZLE_MOVE_FAILED");
+      }
+    }
+    for (let attempt = 0; attempt < waitAttempts; attempt += 1) {
+      if (success()) return { solved: true, moves: path.length };
+      await pause(pollMs);
+    }
+    throw new Error("PUZZLE_NOT_CONFIRMED");
   }
 
   function normalizedUrl(value) {
@@ -529,22 +755,27 @@
   function signature(catalog) {
     return JSON.stringify({
       missingSections: catalog.missingSections,
+      claimablePoints: catalog.claimablePoints ?? null,
       entries: catalog.entries.map(({ section, title, text, kind, url, disabled, action }) => ({
         section, title, text, kind, url, disabled, action,
       })),
     });
   }
 
-  async function collectStableCatalog(collector, args = [], requireSections = false) {
+  async function collectStableCatalog(collector, args = [], requireSections = false, requireClaimBalance = false) {
     let previousSignature = null;
     let latest = { entries: [], missingSections: [] };
     for (let attempt = 0; attempt < 30; attempt += 1) {
       latest = collector(...args);
       const currentSignature = signature(latest);
       if (currentSignature === previousSignature &&
+          (!requireClaimBalance || typeof latest.claimablePoints === "number") &&
           (!requireSections || latest.missingSections.length === 0)) return latest;
       previousSignature = currentSignature;
       if (attempt < 29) await delay(500);
+    }
+    if (requireClaimBalance && typeof latest.claimablePoints !== "number") {
+      throw new Error("CLAIM_BALANCE_UNAVAILABLE");
     }
     return latest;
   }
@@ -676,6 +907,18 @@
   async function finishPendingAction(state, outcome = "COMPLETED", reason = "ACTION_TRIGGERED") {
     const pending = state.pending;
     if (!pending?.entry) throw new Error("PENDING_ACTION_MISSING");
+    if (outcome === "COMPLETED" && pending.recognition.reason === "IMAGE_PUZZLE" && reason !== "PUZZLE_COMPLETED") {
+      state.phase = "solve-puzzle";
+      setCurrentStep(state, "正在完成拼图", pending.entry.section);
+      await completePendingPuzzle(state);
+      return;
+    }
+    if (outcome === "COMPLETED" && pending.entry.action === "claim-points" && reason !== "POINTS_CLAIMED") {
+      state.phase = "verify-claim";
+      setCurrentStep(state, "正在确认积分到账", "待领取积分");
+      await verifyPendingClaim(state);
+      return;
+    }
     if (outcome === "COMPLETED" && pending.entry.source === "quest") {
       state.phase = "rescan-quest";
       state.questRescan = {
@@ -710,6 +953,39 @@
     await executeCatalog(state);
   }
 
+  async function completePendingPuzzle(state) {
+    try {
+      if (!analyzeEntryFeatures({ kind: "link", url: location.href }).imagePuzzle) {
+        throw new Error("PUZZLE_PAGE_UNAVAILABLE");
+      }
+      const result = await solveImagePuzzle();
+      appendLog(state, "PUZZLE_COMPLETED", { moves: result.moves });
+    } catch (error) {
+      await finishPendingAction(state, "FAILED", error.message || "PUZZLE_NOT_CONFIRMED");
+      return;
+    }
+    // Persist verified completion before Bing's own delayed redirect can unload us.
+    state.phase = "puzzle-completed";
+    setState(state);
+    await delay(SETTLE_DELAY_MS);
+    await finishPendingAction(state, "COMPLETED", "PUZZLE_COMPLETED");
+  }
+
+  async function verifyPendingClaim(state) {
+    if (navigateCurrentTab(DASHBOARD_URL)) return;
+    const before = state.pending.claimBefore;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const { claimablePoints } = collectDashboardEntries();
+      if (typeof claimablePoints === "number" && claimablePoints >= 0 && claimablePoints < before) {
+        appendLog(state, "POINTS_CLAIMED", { claimedPoints: before - claimablePoints });
+        await finishPendingAction(state, "COMPLETED", "POINTS_CLAIMED");
+        return;
+      }
+      await delay(500);
+    }
+    await finishPendingAction(state, "FAILED", "CLAIM_NOT_CONFIRMED");
+  }
+
   async function executeButton(state) {
     const { entry } = state.pending;
     if (navigateCurrentTab(entry.sourceUrl || REWARDS_URL)) return;
@@ -731,6 +1007,8 @@
       await finishPendingAction(state, "FAILED", "BUTTON_NOT_UNIQUE");
       return;
     }
+
+    if (entry.action === "claim-points") state.pending.claimBefore = matches[0].rewardPoints;
 
     state.phase = "execute-button-wait";
     appendLog(state, "CARD_CLICK", {
@@ -812,6 +1090,7 @@
       const previous = readValue(MEMORY_KEY, {})[taskMemoryKey(entry)];
       const dateKey = beijingDateKey(new Date(state.startedAt));
       const decision = state.trigger !== "manual" && recognition.decision === "ELIGIBLE" &&
+        entry.action !== "claim-points" &&
         previous?.lastCompletedDate === dateKey
         ? { ...recognition, decision: "SKIPPED", reason: "ALREADY_TRIGGERED_TODAY" }
         : recognition;
@@ -843,6 +1122,12 @@
       return;
     }
 
+    if (!state.claimsRefreshed) {
+      state.phase = "rescan-dashboard";
+      setCurrentStep(state, "正在检查本轮可领取积分", "待领取积分");
+      await resumePhase(state);
+      return;
+    }
     state.phase = "returning";
     setCurrentStep(state, "正在返回积分页面", "运行状态");
     if (navigateCurrentTab(REWARDS_URL)) return;
@@ -921,6 +1206,29 @@
   }
 
   async function resumePhase(state) {
+    if (state.phase === "puzzle-completed") {
+      await finishPendingAction(state, "COMPLETED", "PUZZLE_COMPLETED");
+      return;
+    }
+    if (state.phase === "solve-puzzle") {
+      await completePendingPuzzle(state);
+      return;
+    }
+    if (state.phase === "verify-claim") {
+      await verifyPendingClaim(state);
+      return;
+    }
+    if (state.phase === "rescan-dashboard") {
+      if (navigateCurrentTab(DASHBOARD_URL)) return;
+      await delay(SETTLE_DELAY_MS);
+      const catalog = await collectStableCatalog(collectDashboardEntries, [], false, true);
+      appendCatalog(state, { ...catalog, entries: catalog.entries.filter((entry) => entry.action === "claim-points") }, "dashboard", DASHBOARD_URL);
+      state.claimsRefreshed = true;
+      state.phase = "execute";
+      setState(state);
+      await executeCatalog(state);
+      return;
+    }
     if (state.phase === "rescan-quest") {
       const rescan = state.questRescan;
       if (!rescan?.sourceUrl || !rescan.parentTitle) throw new Error("QUEST_RESCAN_STATE_MISSING");
@@ -994,7 +1302,7 @@
       if (navigateCurrentTab(DASHBOARD_URL)) return;
       setCurrentStep(state, "正在识别积分首页", "任务识别");
       const catalog = await collectStableCatalog(collectDashboardEntries);
-      appendCatalog(state, catalog, "dashboard", DASHBOARD_URL);
+      appendCatalog(state, { ...catalog, entries: catalog.entries.filter((entry) => entry.action !== "claim-points") }, "dashboard", DASHBOARD_URL);
       state.phase = "execute";
       state.index = 0;
       setState(state);
@@ -1081,9 +1389,262 @@
     void resumeRun();
   }
 
+  function createRewardsFloatingWidget({ hostId, loadPosition = () => null, savePosition = () => {} }) {
+    const SIZE = 56;
+    const MARGIN = 12;
+    const host = document.createElement("div");
+    host.id = hostId;
+    Object.assign(host.style, {
+      all: "initial", position: "fixed", zIndex: "2147483647", display: "block",
+      font: '13px/1.45 "Segoe UI", "PingFang SC", sans-serif', colorScheme: "light",
+    });
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>
+      :host { color-scheme: light; font: 13px/1.45 "Segoe UI", "PingFang SC", sans-serif; }
+      *, *::before, *::after { box-sizing: border-box; }
+      button { font: inherit; -webkit-tap-highlight-color: transparent; }
+      .rw-launcher {
+        position: absolute; top: 0; left: 0; width: 56px; height: 56px; display: flex;
+        align-items: center; padding: 0; border: 1px solid rgba(255,255,255,.78);
+        border-radius: 999px; color: #333367; cursor: grab; touch-action: none; user-select: none;
+        background: linear-gradient(135deg,rgba(255,255,255,.8),rgba(232,239,255,.32));
+        backdrop-filter: blur(18px) saturate(180%); -webkit-backdrop-filter: blur(18px) saturate(180%);
+        box-shadow: inset 0 1px 2px #fff, inset 0 -6px 14px rgba(116,98,230,.12),
+          0 7px 24px rgba(87,75,164,.2), 0 0 24px rgba(139,124,255,.16);
+        overflow: hidden; isolation: isolate;
+        transition: width .42s cubic-bezier(.22,1,.36,1), box-shadow .3s, opacity .16s, transform .25s;
+      }
+      :host([data-side="right"]) .rw-launcher { left: auto; right: 0; }
+      .rw-launcher::before {
+        content: ""; position: absolute; z-index: -2; inset: -40%; opacity: .72; filter: blur(9px);
+        background: conic-gradient(from 0deg,transparent 0deg,#ab9cff 70deg,#cdfcff 130deg,
+          transparent 180deg,#f2bcff 245deg,#88e2ff 300deg,transparent 360deg);
+        animation: rw-flow 7s linear infinite;
+      }
+      .rw-launcher::after {
+        content: ""; position: absolute; z-index: -1; inset: 1px; border-radius: inherit;
+        background: radial-gradient(ellipse at 28% 15%,rgba(255,255,255,.97),rgba(255,255,255,.05) 53%),
+          linear-gradient(150deg,rgba(255,255,255,.22),rgba(204,226,255,.18) 65%,rgba(255,255,255,.58));
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.35);
+      }
+      .rw-spark { flex: 0 0 24px; width: 24px; height: 24px; margin: 0 12px 0 15px;
+        filter: drop-shadow(0 0 6px rgba(130,97,255,.38)); animation: rw-shimmer 4s ease-in-out infinite; }
+      .rw-label { opacity: 0; white-space: nowrap; text-align: left; transform: translateX(-5px);
+        transition: opacity .2s, transform .35s; pointer-events: none; }
+      .rw-label strong { display: block; font-size: 12px; font-weight: 650; letter-spacing: .04em; }
+      .rw-label small { display: block; margin-top: 1px; font-size: 10px; color: #6c6c96; }
+      @media (hover: hover) {
+        :host(:not([data-dragging="true"])) .rw-launcher:hover { width: var(--rw-hover-width,156px);
+          box-shadow: inset 0 1px 2px #fff,0 10px 30px rgba(92,76,185,.23),0 0 30px rgba(131,196,255,.22); }
+        :host(:not([data-dragging="true"])) .rw-launcher:hover .rw-label { opacity: 1; transform: none; }
+      }
+      .rw-launcher:focus-visible { width: var(--rw-hover-width,156px); outline: 2px solid #8976ed; outline-offset: 4px; }
+      .rw-launcher:focus-visible .rw-label { opacity: 1; transform: none; }
+      :host([data-running="true"]) .rw-launcher::before { animation-duration: 3s; opacity: .95; }
+      :host([data-dragging="true"]) .rw-launcher, :host([data-dragging="true"]) .rw-grip { cursor: grabbing; }
+      :host([data-dragging="true"]) .rw-launcher { transition: none; }
+      .rw-panel {
+        position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden;
+        border: 1px solid rgba(255,255,255,.88); border-radius: 22px;
+        background: rgba(248,250,255,.86); backdrop-filter: blur(24px) saturate(140%);
+        -webkit-backdrop-filter: blur(24px) saturate(140%);
+        box-shadow: 0 22px 70px rgba(31,34,76,.19),0 2px 9px rgba(62,56,108,.1),inset 0 1px 0 #fff;
+        opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-5px) scale(.94);
+        transform-origin: top left; transition: opacity .2s, transform .3s cubic-bezier(.22,1,.36,1),visibility .2s;
+      }
+      :host([data-side="right"]) .rw-panel { transform-origin: top right; }
+      :host([data-open="true"]) .rw-panel { opacity: 1; visibility: visible; pointer-events: auto; transform: none; }
+      :host([data-open="true"]) .rw-launcher { opacity: 0; visibility: hidden; pointer-events: none; transform: scale(.8); }
+      .rw-bar { display: flex; align-items: center; flex: 0 0 48px; gap: 8px; padding: 0 10px 0 16px;
+        border-bottom: 1px solid rgba(126,122,169,.12); background: linear-gradient(100deg,rgba(237,231,255,.6),rgba(224,247,255,.5)); }
+      .rw-grip { display: flex; align-items: center; align-self: stretch; flex: 1; min-width: 0; gap: 9px;
+        color: #57527e; cursor: grab; touch-action: none; user-select: none; }
+      .rw-grip svg { flex: 0 0 14px; opacity: .55; }
+      .rw-grip strong { font-size: 11px; font-weight: 650; letter-spacing: .12em; }
+      .rw-grip span { margin-left: auto; color: #89869f; font-size: 10px; }
+      .rw-close { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px;
+        border: 1px solid rgba(133,123,171,.12); border-radius: 50%; background: rgba(255,255,255,.6);
+        color: #78718e; cursor: pointer; transition: background .2s,color .2s; }
+      .rw-close:hover { background: #fff; color: #514680; }
+      .rw-close:focus-visible { outline: 2px solid #8976ed; outline-offset: 2px; }
+      .rw-content { flex: 1; min-height: 0; overflow: auto; }
+      .rw-content > iframe { display: block; width: 100%; height: 100%; border: 0; background: #f5f7fa; }
+      @keyframes rw-flow { to { transform: rotate(360deg); } }
+      @keyframes rw-shimmer { 50% { opacity: .78; filter: drop-shadow(0 0 9px rgba(130,97,255,.6)); } }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; }
+      }
+    </style>
+    <button class="rw-launcher" type="button" aria-label="展开积分面板，可拖动调整位置" aria-expanded="false" aria-controls="rw-panel" title="拖动移动位置 · 点击展开">
+      <svg class="rw-spark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M11 2.5c.9 5.6 2.9 7.6 8.5 8.5-5.6.9-7.6 2.9-8.5 8.5C10.1 13.9 8.1 11.9 2.5 11 8.1 10.1 10.1 8.1 11 2.5Z" fill="#8474ce"/>
+        <path d="M19 2.5c.3 2.2 1.3 3.2 3.5 3.5-2.2.3-3.2 1.3-3.5 3.5-.3-2.2-1.3-3.2-3.5-3.5 2.2-.3 3.2-1.3 3.5-3.5Z" fill="#8bcfdd"/>
+        <circle cx="19.5" cy="18.5" r="1.5" fill="#baa2e8"/>
+      </svg>
+      <span class="rw-label"><strong class="rw-orb-title">积分助手</strong><small>点击展开 · 拖动移动</small></span>
+    </button>
+    <section class="rw-panel" id="rw-panel" aria-label="Bing Rewards 积分面板" aria-hidden="true">
+      <div class="rw-bar"><div class="rw-grip" title="拖动调整面板位置">
+        <svg viewBox="0 0 14 18" fill="currentColor" aria-hidden="true"><circle cx="4" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/><circle cx="4" cy="9" r="1.2"/><circle cx="10" cy="9" r="1.2"/><circle cx="4" cy="14" r="1.2"/><circle cx="10" cy="14" r="1.2"/></svg>
+        <strong>REWARDS</strong><span>拖动调整位置</span></div>
+        <button class="rw-close" type="button" aria-label="收起积分面板" title="收起 (Esc)"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="m3 3 6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+      </div><div class="rw-content"></div>
+    </section>`;
+
+    const launcher = root.querySelector(".rw-launcher");
+    const panel = root.querySelector(".rw-panel");
+    const grip = root.querySelector(".rw-grip");
+    const closeButton = root.querySelector(".rw-close");
+    const content = root.querySelector(".rw-content");
+    const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
+    const clamp = (value, min, max) => Math.max(min, Math.min(value, Math.max(min, max)));
+    const bounds = () => expanded
+      ? { width: Math.min(400, viewport().width - MARGIN * 2), height: Math.min(720, viewport().height - MARGIN * 2) }
+      : { width: SIZE, height: SIZE };
+    let expanded = false;
+    let interacted = false;
+    let destroyed = false;
+    let running = false;
+    let suppressClick = false;
+    let drag = null;
+    let side = "right";
+    let orb = { x: viewport().width - SIZE - 24, y: 96 };
+    let position = { ...orb };
+
+    function layout() {
+      const view = viewport();
+      const size = bounds();
+      orb.x = clamp(orb.x, MARGIN, view.width - SIZE - MARGIN);
+      orb.y = clamp(orb.y, MARGIN, view.height - SIZE - MARGIN);
+      position.x = clamp(expanded ? position.x : orb.x, MARGIN, view.width - size.width - MARGIN);
+      position.y = clamp(expanded ? position.y : orb.y, MARGIN, view.height - size.height - MARGIN);
+      if (!expanded) side = orb.x + SIZE / 2 >= view.width / 2 ? "right" : "left";
+      host.dataset.side = side;
+      host.dataset.open = String(expanded);
+      Object.assign(host.style, { left: `${position.x}px`, top: `${position.y}px`, width: `${size.width}px`, height: `${size.height}px` });
+      const hoverWidth = Math.min(156, side === "right" ? orb.x + SIZE - MARGIN : view.width - orb.x - MARGIN);
+      host.style.setProperty?.("--rw-hover-width", `${Math.max(SIZE, hoverWidth)}px`);
+      panel.inert = !expanded;
+      launcher.inert = expanded;
+      panel.setAttribute("aria-hidden", String(!expanded));
+      launcher.setAttribute("aria-expanded", String(expanded));
+    }
+
+    function persist() {
+      const view = viewport();
+      try {
+        Promise.resolve(savePosition({
+          xRatio: clamp((orb.x - MARGIN) / Math.max(1, view.width - SIZE - MARGIN * 2), 0, 1),
+          yRatio: clamp((orb.y - MARGIN) / Math.max(1, view.height - SIZE - MARGIN * 2), 0, 1),
+        })).catch(() => {});
+      } catch { /* A disabled extension/storage must not prevent dragging. */ }
+    }
+
+    function open() {
+      if (expanded) return;
+      interacted = true;
+      expanded = true;
+      position = { x: orb.x - (side === "right" ? bounds().width - SIZE : 0), y: orb.y };
+      layout();
+      closeButton.focus({ preventScroll: true });
+    }
+
+    function close() {
+      if (!expanded) return;
+      expanded = false;
+      layout();
+      launcher.focus({ preventScroll: true });
+    }
+
+    launcher.addEventListener("click", (event) => {
+      if (suppressClick && event.detail !== 0) {
+        suppressClick = false;
+        event.preventDefault();
+        return;
+      }
+      suppressClick = false;
+      open();
+    });
+    closeButton.addEventListener("click", close);
+
+    for (const handle of [launcher, grip]) {
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || event.isPrimary === false) return;
+        interacted = true;
+        suppressClick = false;
+        drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, x: position.x, y: position.y, moved: false };
+        handle.setPointerCapture(event.pointerId);
+      });
+      handle.addEventListener("pointermove", (event) => {
+        if (!drag || drag.id !== event.pointerId) return;
+        const dx = event.clientX - drag.startX;
+        const dy = event.clientY - drag.startY;
+        if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+        drag.moved = true;
+        host.dataset.dragging = "true";
+        event.preventDefault();
+        position = { x: drag.x + dx, y: drag.y + dy };
+        if (!expanded) orb = { ...position };
+        layout();
+        if (expanded) orb = { x: position.x + (side === "right" ? bounds().width - SIZE : 0), y: position.y };
+      });
+      const endDrag = (event) => {
+        if (!drag || drag.id !== event.pointerId) return;
+        const moved = drag.moved;
+        drag = null;
+        host.dataset.dragging = "false";
+        suppressClick = moved;
+        try { handle.releasePointerCapture(event.pointerId); } catch { /* Already released on cancel. */ }
+        if (moved) persist();
+      };
+      handle.addEventListener("pointerup", endDrag);
+      handle.addEventListener("pointercancel", endDrag);
+      handle.addEventListener("lostpointercapture", endDrag);
+    }
+
+    const onKey = (event) => {
+      if (event.key === "Escape" && expanded) { event.preventDefault(); close(); }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("resize", layout);
+    function ensureVisible() {
+      if (destroyed) return;
+      if (!host.isConnected) document.documentElement.append(host);
+      layout();
+    }
+    function setStatus({ running: active = false } = {}) {
+      running = Boolean(active);
+      host.dataset.running = String(running);
+      root.querySelector(".rw-orb-title").textContent = running ? "正在领取" : "积分助手";
+      launcher.setAttribute("aria-label", `${running ? "领取中，" : ""}展开积分面板，可拖动调整位置`);
+    }
+    const widget = {
+      host, root, content, open, close, ensureVisible, setStatus,
+      destroy() {
+        destroyed = true;
+        window.removeEventListener("keydown", onKey);
+        window.removeEventListener("resize", layout);
+        host.remove();
+      },
+    };
+    host.__rewardsFloatingWidget = widget;
+    ensureVisible();
+    setStatus();
+    try {
+      Promise.resolve(loadPosition()).then((stored) => {
+        if (destroyed || interacted || !Number.isFinite(stored?.xRatio) || !Number.isFinite(stored?.yRatio)) return;
+        orb = {
+          x: MARGIN + clamp(stored.xRatio, 0, 1) * Math.max(0, viewport().width - SIZE - MARGIN * 2),
+          y: MARGIN + clamp(stored.yRatio, 0, 1) * Math.max(0, viewport().height - SIZE - MARGIN * 2),
+        };
+        layout();
+      }).catch(() => {});
+    } catch { /* Fall back to the default corner if saved coordinates are unavailable. */ }
+    return widget;
+  }
+
   function panelMarkup() {
     return `
-      <button class="brac-toggle" type="button" aria-label="折叠面板">−</button>
       <div class="brac-body">
         <header><div><small>BING REWARDS v${VERSION}</small><h1>简单积分领取</h1></div><span data-role="status">尚未运行</span></header>
         <div class="brac-schedule"><span>每日首次访问自动执行</span><strong>北京时间 09:00 后</strong></div>
@@ -1097,25 +1658,22 @@
 
   function mountPanel() {
     if (document.getElementById(PANEL_ID)) return;
-    const host = document.createElement("div");
-    host.id = PANEL_ID;
-    const shadow = host.attachShadow({ mode: "open" });
-    shadow.innerHTML = `<style>
-      :host{all:initial;position:fixed;top:12px;right:12px;z-index:2147483647;width:min(380px,calc(100vw - 24px));max-height:calc(100vh - 24px);font-family:Inter,"Segoe UI","PingFang SC",sans-serif;color:#162033}
-      *{box-sizing:border-box}.brac-body{overflow:auto;max-height:calc(100vh - 24px);padding:20px;border:1px solid #d0d5dd;border-radius:16px;background:#f5f7fa;box-shadow:0 18px 45px rgba(15,23,42,.28)}
+    const widget = createRewardsFloatingWidget({
+      hostId: PANEL_ID,
+      loadPosition: () => readValue("bingRewardsFloatingPosition", null),
+      savePosition: (position) => writeValue("bingRewardsFloatingPosition", position),
+    });
+    const style = document.createElement("style");
+    style.textContent = `
+      .brac-body{padding:20px;color:#162033;background:#f5f7fa;min-height:100%}
       header,.brac-schedule,.brac-summary{display:flex;align-items:center;justify-content:space-between;gap:12px}h1{margin:2px 0 0;font-size:22px}small{display:block;color:#667085;font-size:11px;font-weight:650}header span{border:1px solid #d0d5dd;border-radius:999px;padding:6px 10px;background:#fff;color:#475467;font-size:12px}
       .brac-schedule,.brac-summary{margin-top:16px;border:1px solid #e4e7ec;border-radius:12px;padding:13px;background:#fff;font-size:12px}.brac-run{width:100%;min-height:44px;margin-top:14px;border:0;border-radius:10px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}.brac-run:disabled{opacity:.55;cursor:wait}
       .brac-progress{margin-top:12px;border:1px solid #84adff;border-radius:12px;padding:12px 14px;background:#eff8ff}.brac-progress[hidden]{display:none}.brac-progress strong{display:block;margin-top:4px;color:#1849a9;font-size:14px}.brac-summary strong{display:block;margin:3px 0;font-size:13px}.brac-summary time{color:#667085;font-size:11px}.brac-results{display:grid;gap:8px;margin-top:14px}.brac-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-left:3px solid #98a2b3;padding:8px 9px;background:#fff;font-size:11px}.brac-item[data-outcome="COMPLETED"]{border-left-color:#079455}.brac-item[data-outcome="FAILED"]{border-left-color:#d92d20}.brac-item strong{display:block;font-size:12px}.brac-item small{margin-top:3px}.brac-outcome{flex:none;color:#475467}
       .brac-logs{margin-top:14px;border:1px solid #e4e7ec;border-radius:10px;padding:10px;background:#fff;font-size:12px}.brac-logs summary{cursor:pointer;font-weight:700}.brac-logs pre{overflow:auto;max-height:220px;margin:10px 0 0;white-space:pre-wrap;color:#475467;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-      .brac-toggle{position:absolute;top:8px;right:8px;z-index:2;width:28px;height:28px;border:1px solid #d0d5dd;border-radius:50%;background:#fff;color:#475467;cursor:pointer}:host(.collapsed){width:48px;height:48px}:host(.collapsed) .brac-body{display:none}:host(.collapsed) .brac-toggle{top:0;right:0;width:44px;height:44px;font-size:0}:host(.collapsed) .brac-toggle::after{content:"积";font-size:14px;font-weight:700;color:#175cd3}
-    </style>${panelMarkup()}`;
-    shadow.querySelector('[data-role="run"]').addEventListener("click", () => startRun("manual"));
-    shadow.querySelector(".brac-toggle").addEventListener("click", (event) => {
-      const collapsed = host.classList.toggle("collapsed");
-      event.currentTarget.textContent = collapsed ? "+" : "−";
-      event.currentTarget.setAttribute("aria-label", collapsed ? "展开面板" : "折叠面板");
-    });
-    document.documentElement.append(host);
+    `;
+    widget.root.append(style);
+    widget.content.innerHTML = panelMarkup();
+    widget.root.querySelector('[data-role="run"]').addEventListener("click", () => startRun("manual"));
   }
 
   function renderPanel(state = getState()) {
@@ -1123,6 +1681,7 @@
     const root = host?.shadowRoot;
     if (!root) return;
     const running = state?.status === "running";
+    host.__rewardsFloatingWidget?.setStatus({ running });
     const summary = state?.summary ?? { completed: 0, skipped: 0, failed: 0 };
     const memory = readValue(MEMORY_KEY, {});
     const status = root.querySelector('[data-role="status"]');
@@ -1194,10 +1753,17 @@
   }
 
   const testApi = {
+    createRewardsFloatingWidget,
     inferCompleted,
     analyzeEntryFeatures,
     classifyEntry,
     activateRewardsLink,
+    solveImagePuzzle,
+    collectDashboardEntries,
+    activateRewardsButton,
+    createRun,
+    executeCatalog,
+    resumePhase,
     findNewQuestEntries,
     questProgressAdvanced,
     beijingDateKey,

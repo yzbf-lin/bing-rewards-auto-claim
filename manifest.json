@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Bing Rewards 简单积分领取",
-  "version": "0.3.5",
-  "description": "每天识别、记录并执行一次即可完成的 Bing Rewards 积分入口。",
+  "version": "0.4.2",
+  "description": "自动完成 Bing Rewards 单步任务、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。",
   "permissions": [
     "alarms",
     "storage",
@@ -20,6 +20,7 @@
         "https://*.bing.com/*"
       ],
       "js": [
+        "src/content/floating-widget.js",
         "src/content/progress-overlay.js"
       ],
       "run_at": "document_idle"
