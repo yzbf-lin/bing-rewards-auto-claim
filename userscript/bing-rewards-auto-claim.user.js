@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.4.5
+// @version      0.4.6
 // @description  自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
@@ -25,7 +25,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.4.5";
+  const VERSION = "0.4.6";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -817,24 +817,27 @@
     element.click();
 
     if (action === "claim-points") {
+      const claimLabel = /^(?:[领領]取(?:[积積]分|[点點][数數])?|claim(?:\s+(?:points|now))?)$/i;
+      // The confirmation can be one card-sized button containing its balance and status.
+      const claimCard = /^(?:[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)\s+(?:待[领領]取|pending|unclaimed|claimable|to\s+claim)\s+(?:[领領]取(?:[积積]分|[点點][数數])|claim(?:\s+(?:points|now))?)$/i;
       for (let attempt = 0; attempt < 40; attempt += 1) {
         const buttons = [...new Set([
           ...document.querySelectorAll("button"),
           ...document.querySelectorAll('[role="button"]'),
         ])];
-        const confirmButton = buttons.find((button) => {
+        const confirmButtons = buttons.filter((button) => {
           const text = String(button.innerText || button.textContent || "")
             .replace(/\s+/g, " ")
             .trim();
-          return /^(?:[领領]取(?:[积積]分|[点點][数數])?|claim(?:\s+(?:points|now))?)$/i.test(text) &&
+          return (claimLabel.test(text) || claimCard.test(text)) &&
             Boolean(button.closest?.('[role="dialog"], dialog, [aria-modal="true"]')) &&
             !button.disabled && !button.hidden && !button.hasAttribute("disabled") &&
             button.getAttribute("aria-disabled") !== "true" &&
             !button.closest?.('[hidden], [aria-hidden="true"]') &&
             (!button.getClientRects || button.getClientRects().length > 0);
         });
-        if (confirmButton) {
-          confirmButton.click();
+        if (confirmButtons.length === 1) {
+          confirmButtons[0].click();
           return true;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));

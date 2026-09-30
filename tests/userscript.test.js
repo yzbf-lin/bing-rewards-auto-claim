@@ -236,9 +236,10 @@ test("standalone userscript keeps the floating widget identical to the extension
   assert.equal(normalized(loadApi().createRewardsFloatingWidget), normalized(context.createRewardsFloatingWidget));
 });
 
-function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), tabData = {}, location = { href: "https://rewards.bing.com/dashboard" } } = {}) {
+function claimRuntime({ points = 30, unknownReads = 0, confirmText = "领取积分", claimedBalance = 0, store = new Map(), tabData = {}, location = { href: "https://rewards.bing.com/dashboard" } } = {}) {
   let balance = points;
   let clicks = 0;
+  let confirmClicks = 0;
   let reads = 0;
   const attributes = new Map();
   const card = {
@@ -253,10 +254,10 @@ function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), tabDat
     click() { clicks++; },
   };
   const confirm = {
-    tagName: "BUTTON", innerText: "领取积分",
+    tagName: "BUTTON", innerText: confirmText,
     closest: (selector) => selector.includes("dialog") ? {} : null,
     getAttribute: () => null, hasAttribute: () => false,
-    click() { balance = 0; },
+    click() { confirmClicks++; balance = claimedBalance; },
   };
   const document = {
     getElementById: () => null,
@@ -275,8 +276,32 @@ function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), tabDat
   };
   const runtime = loadRuntime(overrides);
   const ready = runtime.api.initializeTabIdentity();
-  return { ...runtime, ready, store, tabData, location, get clicks() { return clicks; } };
+  return { ...runtime, ready, store, tabData, location, get clicks() { return clicks; }, get confirmClicks() { return confirmClicks; } };
 }
+
+test("userscript final claim confirms a card containing the amount and pending badge", async () => {
+  const runtime = claimRuntime({ points: 3, confirmText: "3\n\n待领取\n\n领取积分" });
+  await runtime.ready;
+  const state = runtime.api.createRun("manual");
+  state.phase = "rescan-dashboard";
+  await runtime.api.resumePhase(state);
+  assert.equal(runtime.clicks, 1);
+  assert.equal(runtime.confirmClicks, 1);
+  assert.equal(state.results.length, 1);
+  assert.equal(state.results[0].reason, "POINTS_CLAIMED");
+  assert.equal(state.results[0].outcome, "COMPLETED");
+});
+
+test("userscript card confirmation still fails when the claim balance does not decrease", async () => {
+  const runtime = claimRuntime({ points: 3, confirmText: "3\n待领取\n领取积分", claimedBalance: 3 });
+  await runtime.ready;
+  const state = runtime.api.createRun("manual");
+  state.phase = "rescan-dashboard";
+  await runtime.api.resumePhase(state);
+  assert.equal(runtime.confirmClicks, 1);
+  assert.equal(state.results[0].reason, "CLAIM_NOT_CONFIRMED");
+  assert.equal(state.results[0].outcome, "FAILED");
+});
 
 test("userscript resumes its final dashboard scan after navigation and claims only once", async () => {
   const location = { href: "https://www.bing.com/search?q=last-task" };

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bing Rewards 简单积分领取",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分；适用于 Chrome，Edge 暂不支持。",
   "permissions": [
     "alarms",

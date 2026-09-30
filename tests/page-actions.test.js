@@ -456,6 +456,114 @@ test("confirms the claim-points dialog after activating its card", async () => {
   assert.equal(confirm.clicked, true);
 });
 
+function installClaimDialog(buttons, { appearAfter = 0 } = {}) {
+  const claim = card({ tagName: "BUTTON", text: "可领取 3 领取" });
+  claim.setAttribute("data-rewards-auto-id", "claimable-points");
+  claim.setAttribute("data-rewards-auto-action", "claim-points");
+  installDocument([group("待领取积分", [claim])]);
+  let reads = 0;
+  for (const button of buttons) {
+    button.clicks = 0;
+    button.click = () => { button.clicks++; };
+    button.closest ??= (selector) => selector.includes("dialog") ? {} : null;
+  }
+  document.querySelectorAll = (selector) => {
+    if (selector !== "button") return [];
+    reads++;
+    return claim.clicked && reads > appearAfter ? [claim, ...buttons] : [claim];
+  };
+  return { claim, get reads() { return reads; } };
+}
+
+async function withFastClaimTimers(callback) {
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (resolve) => { resolve(); return 0; };
+  try {
+    await callback();
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+}
+
+test("confirms a delayed points card whose button contains the amount, pending status and action", async () => {
+  await withFastClaimTimers(async () => {
+    const confirm = card({ tagName: "BUTTON", text: "3\n\n待领取\n\n领取积分" });
+    const outside = card({ tagName: "BUTTON", text: "领取积分" });
+    outside.closest = () => null;
+    const fixture = installClaimDialog([outside, confirm], { appearAfter: 3 });
+
+    assert.equal(await activateRewardsButton("claimable-points"), true);
+    assert.equal(fixture.claim.clicked, true);
+    assert.equal(fixture.reads, 4);
+    assert.equal(confirm.clicks, 1);
+    assert.equal(outside.clicks, 0);
+  });
+});
+
+test("supports localized pending points cards and keeps the original exact claim labels", async () => {
+  await withFastClaimTimers(async () => {
+    for (const text of [
+      "1,250 待領取 領取積分", "3 待領取 領取點數", "3 Pending Claim points",
+      "Claim", "Claim now", "Claim points", "领取", "領取積分",
+    ]) {
+      const confirm = card({ tagName: "BUTTON", text });
+      installClaimDialog([confirm]);
+      await activateRewardsButton("claimable-points");
+      assert.equal(confirm.clicks, 1, text);
+    }
+  });
+});
+
+test("ignores hidden and disabled claim cards while selecting the one usable dialog action", async () => {
+  await withFastClaimTimers(async () => {
+    const unavailable = [
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分", disabled: true }),
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分" }),
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分" }),
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分" }),
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分" }),
+    ];
+    unavailable[1].hidden = true;
+    unavailable[2].closest = (selector) => selector.includes("dialog") || selector.includes("hidden") ? {} : null;
+    unavailable[3].getClientRects = () => [];
+    unavailable[4].setAttribute("disabled", "");
+    const confirm = card({ tagName: "BUTTON", text: "3 待领取 领取积分" });
+    installClaimDialog([...unavailable, confirm]);
+
+    await activateRewardsButton("claimable-points");
+    assert.equal(confirm.clicks, 1);
+    assert.ok(unavailable.every((button) => button.clicks === 0));
+  });
+});
+
+test("does not confirm zero balances, malformed amounts or ambiguous claim descriptions", async () => {
+  await withFastClaimTimers(async () => {
+    const buttons = [
+      "0 待领取 领取积分", "-3 待领取 领取积分", "3.5 待领取 领取积分",
+      "1,25 待领取 领取积分", "3 已领取 领取积分", "3 领取积分",
+      "完成任务后 3 待领取 领取积分", "3 待领取 领取积分 查看详情",
+      "3 待领取 兑换积分", "待领取 领取积分", "3 Pending Redeem points",
+    ].map((text) => card({ tagName: "BUTTON", text }));
+    installClaimDialog(buttons);
+
+    await activateRewardsButton("claimable-points");
+    assert.ok(buttons.every((button) => button.clicks === 0));
+  });
+});
+
+test("does not choose arbitrarily between two usable claim confirmations", async () => {
+  await withFastClaimTimers(async () => {
+    const confirmations = [
+      card({ tagName: "BUTTON", text: "领取积分" }),
+      card({ tagName: "BUTTON", text: "3 待领取 领取积分" }),
+    ];
+    installClaimDialog(confirmations);
+
+    await activateRewardsButton("claimable-points");
+    assert.deepEqual(confirmations.map((button) => button.clicks), [0, 0]);
+  });
+});
+
 test.after(() => {
   delete globalThis.document;
 });
