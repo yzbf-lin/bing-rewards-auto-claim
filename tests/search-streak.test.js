@@ -23,6 +23,29 @@ test("recognizes the observed single daily Bing search streak without a points b
   });
 });
 
+test("recognizes the observed Rewards streak button before its search link is revealed", () => {
+  const candidate = streak({
+    kind: "button", url: null, title: "必应搜索连续打卡  ",
+    text: "必应搜索连续打卡 已完成连续打卡 3 天，共 7 天。完成下一天即可赚取 3 积分。搜索: 0/1",
+    signals: { completed: false, hasProgress: true },
+  });
+
+  assert.deepEqual(getSearchStreakProgress(candidate), { current: 0, total: 1 });
+  assert.equal(classifyEntry(candidate).reason, "SEARCH_STREAK");
+  assert.equal(classifyEntry({ ...candidate, disabled: true }).reason, "DISABLED");
+  assert.equal(classifyEntry({ ...candidate, text: "搜索: 1/1 连续 3/7 天" }).reason, "COMPLETED");
+});
+
+test("only recognizes URL-less search streak buttons within the streak task section", () => {
+  for (const overrides of [
+    { section: "任务" }, { section: "" }, { section: undefined },
+    { url: "https://evil.example/" }, { url: "https://www.bing.com/" },
+    { title: "每日连续打卡活动" }, { text: "搜索: 0/3" },
+  ]) {
+    assert.equal(getSearchStreakProgress(streak({ kind: "button", url: null, ...overrides })), null);
+  }
+});
+
 test("recognizes traditional-Chinese and English Bing search streak titles and explicit counters", () => {
   for (const [title, text] of [
     ["必應搜尋連續打卡", "搜尋：0 / 1"],
@@ -35,10 +58,8 @@ test("recognizes traditional-Chinese and English Bing search streak titles and e
 });
 
 test("the daily search counter marks completion despite an incomplete multi-day streak", () => {
-  for (const current of [1, 2]) {
-    const candidate = streak({ text: `搜索: ${current}/1 连续天数: 2/7`, signals: { completed: false } });
-    assert.equal(classifyEntry(candidate).reason, "COMPLETED");
-  }
+  const candidate = streak({ text: "搜索: 1/1 连续天数: 2/7", signals: { completed: false } });
+  assert.equal(classifyEntry(candidate).reason, "COMPLETED");
 });
 
 test("search streak preserves disabled and explicit completed state", () => {
@@ -55,7 +76,7 @@ test("search streak never admits general search tasks or unrelated multi-day cam
     streak({ text: "活动: 0/1" }),
     streak({ text: "Research: 0/1" }),
     streak({ text: "搜索: 0/1 搜索: 0/3" }),
-    streak({ kind: "button", url: null }),
+    streak({ kind: "button", url: null, section: "任务" }),
     streak({ kind: "unknown" }),
   ]) {
     assert.equal(classifyEntry(candidate).decision, "SKIPPED", JSON.stringify(candidate));
@@ -74,7 +95,7 @@ test("search streak only admits a trusted HTTPS Bing link", () => {
 test("the progress recognizer survives serialization and rejects malformed counters", () => {
   const recognize = vm.runInNewContext(`(${getSearchStreakProgress.toString()})`, { URL });
   assert.equal(JSON.stringify(recognize(streak())), '{"current":0,"total":1}');
-  for (const text of ["搜索: 0/10", "搜索: -1/1", "搜索: 0.5/1", "搜索: 0/1.5", "搜索: 9007199254740992/1"]) {
+  for (const text of ["搜索: 0/10", "搜索: -1/1", "搜索: 0.5/1", "搜索: 0/1.5", "搜索: 2/1", "搜索: 9007199254740992/1"]) {
     assert.equal(recognize(streak({ text })), null, text);
   }
 });
@@ -257,4 +278,119 @@ test("native submission failures have a stable error and never retry submission"
   Object.getPrototypeOf(page.form).requestSubmit = () => { page.activity.push(["attempt"]); throw new Error("native failure"); };
   await assert.rejects(page.submit("weather"), { message: "SEARCH_SUBMIT_FAILED" });
   assert.equal(page.activity.filter(([event]) => event === "attempt").length, 1);
+});
+
+function searchStreakDialog({ title = "必应搜索连续打卡", href = "https://www.bing.com/?form=ML2PCO" } = {}) {
+  const labels = new Map();
+  function element(tagName, attributes = {}, text = "") {
+    return {
+      tagName, innerText: text, textContent: text, hidden: false, clicked: 0,
+      getAttribute(name) { return attributes[name] ?? null; },
+      hasAttribute(name) { return name in attributes; },
+      setAttribute(name, value) { attributes[name] = value; },
+      getClientRects() { return this.hidden ? [] : [{}]; },
+      closest() { return this.hiddenAncestor ? {} : null; },
+      click() { this.clicked++; },
+    };
+  }
+  const heading = element("H2", { id: "streak-dialog-title" }, title);
+  labels.set("streak-dialog-title", heading);
+  const link = element("A", { href, target: "_blank", slot: "close" }, "立即搜索");
+  link.href = href;
+  const dialog = element("SECTION", { role: "dialog", "aria-labelledby": "streak-dialog-title" });
+  dialog.links = [link];
+  dialog.querySelectorAll = selector => selector === "a[href]" ? dialog.links : [];
+  dialog.querySelector = () => heading;
+  const dialogs = [dialog];
+  const outsideLink = element("A", { href: "https://www.bing.com/" }, "立即搜索");
+  outsideLink.href = "https://www.bing.com/";
+  const document = {
+    getElementById(id) { return labels.get(id) ?? null; },
+    querySelectorAll(selector) {
+      return selector.includes("dialog") ? dialogs : [outsideLink];
+    },
+  };
+  const context = vm.createContext({
+    document, URL, location: { href: "https://rewards.bing.com/earn" },
+    getComputedStyle: item => ({ display: "block", visibility: item.visibility ?? "visible", opacity: "1" }),
+  });
+  document.defaultView = context;
+  vm.runInContext(searchActionsSource.replace(/^export /gm, ""), context);
+  assert.equal(typeof context.activateSearchStreakLink, "function", "search-actions must expose the standalone modal link helper");
+  return { activate: context.activateSearchStreakLink, dialog, dialogs, heading, link, outsideLink };
+}
+
+test("probes the observed aria-labelledby streak dialog without clicking its search link", () => {
+  const page = searchStreakDialog();
+  assert.equal(JSON.stringify(page.activate()), '{"url":"https://www.bing.com/?form=ML2PCO","activated":false}');
+  assert.equal(page.link.clicked, 0);
+  assert.equal(page.link.getAttribute("target"), "_blank");
+  assert.equal(page.outsideLink.clicked, 0);
+});
+
+test("activates the original streak dialog search link once in the current tab", () => {
+  const page = searchStreakDialog();
+  assert.equal(JSON.stringify(page.activate(true)), '{"url":"https://www.bing.com/?form=ML2PCO","activated":true}');
+  assert.equal(page.link.clicked, 1);
+  assert.equal(page.link.getAttribute("target"), "_self");
+  assert.equal(page.outsideLink.clicked, 0);
+});
+
+test("does not use a global search link while the matching streak dialog is absent or hidden", () => {
+  for (const alter of [
+    page => { page.dialogs.length = 0; },
+    page => { page.heading.textContent = "每日连续打卡活动"; },
+    page => { page.dialog.hidden = true; },
+    page => { page.dialog.hiddenAncestor = true; },
+    page => { page.dialog.visibility = "hidden"; },
+    page => { page.dialog.links = []; },
+    page => { page.link.innerText = "其他链接"; },
+  ]) {
+    const page = searchStreakDialog();
+    alter(page);
+    assert.equal(page.activate(true), null);
+    assert.equal(page.link.clicked, 0);
+    assert.equal(page.outsideLink.clicked, 0);
+  }
+});
+
+test("ignores disabled or hidden modal search links and rechecks them before activation", () => {
+  for (const alter of [
+    page => { page.link.hidden = true; },
+    page => { page.link.hiddenAncestor = true; },
+    page => { page.link.visibility = "hidden"; },
+    page => { page.link.setAttribute("aria-disabled", "true"); },
+    page => { page.link.setAttribute("disabled", ""); },
+  ]) {
+    const page = searchStreakDialog();
+    assert.equal(page.activate().activated, false);
+    alter(page);
+    assert.equal(page.activate(true), null);
+    assert.equal(page.link.clicked, 0);
+  }
+});
+
+test("rejects untrusted modal search destinations on both probe and activation", () => {
+  for (const href of [
+    "http://www.bing.com/", "https://bing.com.evil.example/", "https://evilbing.com/",
+    "https://user@www.bing.com/", "javascript:alert(1)", "https://www.bing.com:8443/",
+  ]) {
+    const page = searchStreakDialog({ href });
+    for (const activate of [false, true]) {
+      assert.throws(() => page.activate(activate), { message: "SEARCH_STREAK_LINK_UNSAFE" });
+    }
+    assert.equal(page.link.clicked, 0);
+  }
+});
+
+test("rejects ambiguous streak dialogs and duplicate search links without clicking", () => {
+  for (const duplicate of [
+    page => { page.dialogs.push({ ...page.dialog }); },
+    page => { page.dialog.links.push({ ...page.link }); },
+  ]) {
+    const page = searchStreakDialog();
+    duplicate(page);
+    assert.throws(() => page.activate(true), { message: "SEARCH_STREAK_LINK_NOT_UNIQUE" });
+    assert.equal(page.link.clicked, 0);
+  }
 });

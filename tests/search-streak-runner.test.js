@@ -20,6 +20,10 @@ function setup(query, { fail = false, entries = [streak, normal] } = {}) {
       if (entry.id === streak.id && fail) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
       return { reason: entry.id === streak.id ? "SEARCH_STREAK_COMPLETED" : "ACTION_TRIGGERED" };
     },
+    async executeButton(entry, context) {
+      calls.push({ id: entry.id, context });
+      return { reason: "SEARCH_STREAK_COMPLETED" };
+    },
     async cleanup() {},
   };
   return { state, calls, logs, runner: createClaimRunner({ driver, storage, logger: { info(...args) { logs.push(args); }, warn(...args) { logs.push(args); } } }) };
@@ -42,6 +46,14 @@ test("runner passes the saved trimmed query only to the streak executor without 
   ]);
   assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
   assert.doesNotMatch(JSON.stringify([run, runtime.logs]), /aurora forecasting/);
+});
+
+test("runner passes the saved query to the real button-based search streak", async () => {
+  const rt = setup("  aurora forecasting  ", { entries: [{ ...streak, kind: "button", url: null }] });
+  const run = await rt.runner.run("manual", { targetTabId: 7 });
+  assert.deepEqual(rt.calls, [{ id: streak.id, context: { targetTabId: 7, searchQuery: "aurora forecasting" } }]);
+  assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
+  assert.doesNotMatch(JSON.stringify([run, rt.logs]), /aurora forecasting/);
 });
 
 test("invalid saved query is skipped and never submitted", async () => {

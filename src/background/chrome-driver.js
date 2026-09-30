@@ -6,7 +6,7 @@ import {
   collectRewardsEntries,
 } from "../content/page-actions.js";
 import { solveImagePuzzle } from "../content/image-puzzle.js";
-import { submitBingSearch } from "../content/search-actions.js";
+import { activateSearchStreakLink, submitBingSearch } from "../content/search-actions.js";
 import { getSearchStreakProgress } from "../shared/search-streak.js";
 import { analyzeEntryFeatures } from "../shared/task-policy.js";
 
@@ -182,6 +182,46 @@ export function createChromeDriver({
       throw new Error("CLAIM_BALANCE_UNAVAILABLE");
     }
     return latest;
+  };
+
+  const completeSearchStreak = async (entry, { resultTab, sourceUrl, collector, collectorArgs = [], searchQuery, targetTabId }) => {
+    // The helper waits for the hydrated form and submits once. Register the
+    // navigation listener first so a fast native submission is observed.
+    const searchResultTab = await waitForTabLoaded(resultTab.id, {
+      previousUrl: resultTab.url,
+      navigate: async () => {
+        const results = await executeRewardsScript({
+          target: { tabId: resultTab.id },
+          func: submitBingSearch,
+          args: [searchQuery],
+        });
+        if (!results?.[0]?.result?.submitted) throw new Error("SEARCH_SUBMIT_FAILED");
+      },
+    });
+    if (!canScriptRewardsPage(searchResultTab.url) ||
+        (searchResultTab.pendingUrl && !canScriptRewardsPage(searchResultTab.pendingUrl))) {
+      throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
+    }
+    const searchResultUrl = new URL(searchResultTab.url);
+    const resultQueries = searchResultUrl.searchParams.getAll("q");
+    if (!/^\/search\/?$/i.test(searchResultUrl.pathname) ||
+        resultQueries.length !== 1 || resultQueries[0] !== searchQuery.trim()) {
+      throw new Error("SEARCH_SUBMIT_NOT_CONFIRMED");
+    }
+    await delay(settleDelayMs);
+    await navigateExistingTab(resultTab.id, sourceUrl, Boolean(targetTabId));
+    for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
+      const refreshed = await collectOnce(resultTab.id, collector, collectorArgs);
+      const candidates = refreshed.entries.filter(candidate =>
+        candidate.section === entry.section && candidate.title === entry.title,
+      );
+      const progress = candidates.length === 1 ? getSearchStreakProgress(candidates[0]) : null;
+      if (progress && progress.current >= progress.total) {
+        return { finalUrl: sourceUrl, reason: "SEARCH_STREAK_COMPLETED" };
+      }
+      if (attempt < catalogAttempts - 1) await delay(500);
+    }
+    throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
   };
 
   return {
@@ -373,43 +413,9 @@ export function createChromeDriver({
         }
         const finalUrl = resultTab.url ?? activationResult.url ?? entry.url;
         if (searchStreak) {
-          // The helper waits for the hydrated form and submits once. Register the
-          // navigation listener first so a fast native submission is observed.
-          const searchResultTab = await waitForTabLoaded(resultTab.id, {
-            previousUrl: resultTab.url,
-            navigate: async () => {
-              const results = await executeRewardsScript({
-                target: { tabId: resultTab.id },
-                func: submitBingSearch,
-                args: [searchQuery],
-              });
-              if (!results?.[0]?.result?.submitted) throw new Error("SEARCH_SUBMIT_FAILED");
-            },
+          return await completeSearchStreak(entry, {
+            resultTab, sourceUrl, collector, collectorArgs, searchQuery, targetTabId,
           });
-          if (!canScriptRewardsPage(searchResultTab.url) ||
-              (searchResultTab.pendingUrl && !canScriptRewardsPage(searchResultTab.pendingUrl))) {
-            throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
-          }
-          const searchResultUrl = new URL(searchResultTab.url);
-          const resultQueries = searchResultUrl.searchParams.getAll("q");
-          if (!/^\/search\/?$/i.test(searchResultUrl.pathname) ||
-              resultQueries.length !== 1 || resultQueries[0] !== searchQuery.trim()) {
-            throw new Error("SEARCH_SUBMIT_NOT_CONFIRMED");
-          }
-          await delay(settleDelayMs);
-          await navigateExistingTab(resultTab.id, sourceUrl, Boolean(targetTabId));
-          for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
-            const refreshed = await collectOnce(resultTab.id, collector, collectorArgs);
-            const candidates = refreshed.entries.filter(candidate =>
-              candidate.section === entry.section && candidate.title === entry.title,
-            );
-            const progress = candidates.length === 1 ? getSearchStreakProgress(candidates[0]) : null;
-            if (progress && progress.current >= progress.total) {
-              return { finalUrl: sourceUrl, reason: "SEARCH_STREAK_COMPLETED" };
-            }
-            if (attempt < catalogAttempts - 1) await delay(500);
-          }
-          throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
         }
         if (analyzeEntryFeatures(entry).imagePuzzle) {
           if (!analyzeEntryFeatures({ kind: "link", url: finalUrl }).imagePuzzle) {
@@ -433,7 +439,11 @@ export function createChromeDriver({
       }
     },
 
-    async executeButton(entry, { targetTabId } = {}) {
+    async executeButton(entry, { targetTabId, searchQuery } = {}) {
+      const searchStreak = getSearchStreakProgress(entry);
+      if (searchStreak && (typeof searchQuery !== "string" || !searchQuery.trim())) {
+        throw new Error("SEARCH_QUERY_REQUIRED");
+      }
       const sourceUrl = entry.sourceUrl ?? REWARDS_URL;
       const collector = entry.source === "dashboard"
         ? collectDashboardEntries
@@ -456,7 +466,7 @@ export function createChromeDriver({
         let matches = catalog.entries.filter((candidate) =>
           candidate.section === entry.section &&
           candidate.title === entry.title &&
-          candidate.text === entry.text &&
+          (searchStreak || candidate.text === entry.text) &&
           candidate.kind === "button",
         );
         if (matches.length === 0) {
@@ -468,6 +478,14 @@ export function createChromeDriver({
         }
         if (matches.length !== 1) throw new Error("BUTTON_NOT_UNIQUE");
         if (matches[0].disabled) throw new Error("BUTTON_DISABLED");
+        if (searchStreak) {
+          const progress = getSearchStreakProgress(matches[0]);
+          if (!progress) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+          if (progress.current >= progress.total) {
+            return { finalUrl: sourceUrl, reason: "SEARCH_STREAK_COMPLETED" };
+          }
+          if (matches[0].signals?.completed === true) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+        }
 
         const activation = await executeRewardsScript({
           target: { tabId: sourceTab.id },
@@ -476,6 +494,38 @@ export function createChromeDriver({
         });
         if (activation?.[0]?.result !== true) throw new Error("BUTTON_ACTIVATION_FAILED");
         await delay(settleDelayMs);
+
+        if (searchStreak) {
+          let modalLink = null;
+          for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
+            const results = await executeRewardsScript({
+              target: { tabId: sourceTab.id }, func: activateSearchStreakLink, args: [false],
+            });
+            modalLink = results?.[0]?.result;
+            if (modalLink) break;
+            if (attempt < catalogAttempts - 1) await delay(500);
+          }
+          if (!modalLink) throw new Error("SEARCH_STREAK_LINK_UNAVAILABLE");
+          const activationSource = await chromeApi.tabs.get(sourceTab.id);
+          const results = await executeRewardsScript({
+            target: { tabId: sourceTab.id }, func: activateSearchStreakLink, args: [true],
+          });
+          const activatedLink = results?.[0]?.result;
+          if (!activatedLink?.activated) throw new Error("SEARCH_STREAK_LINK_UNAVAILABLE");
+          await delay(settleDelayMs);
+
+          let resultTab;
+          if (openedTabId) {
+            resultTab = await waitForTabLoaded(openedTabId);
+            if (targetTabId) resultTab = await navigateExistingTab(targetTabId, resultTab.url ?? activatedLink.url);
+          } else {
+            const currentTab = await chromeApi.tabs.get(sourceTab.id);
+            if (currentTab.status !== "complete") resultTab = await waitForTabLoaded(sourceTab.id);
+            else if (currentTab.url !== activationSource.url) resultTab = currentTab;
+            else resultTab = await navigateExistingTab(sourceTab.id, activatedLink.url, Boolean(targetTabId));
+          }
+          return await completeSearchStreak(entry, { resultTab, sourceUrl, collector, searchQuery, targetTabId });
+        }
 
         if (entry.action === "claim-points") {
           const before = matches[0].rewardPoints;

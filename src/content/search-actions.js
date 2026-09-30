@@ -83,3 +83,49 @@ export async function submitBingSearch(query) {
   // This reports a submission attempt; Rewards progress is verified by the caller.
   return { submitted: true };
 }
+
+// Probe first so callers can persist navigation state before clicking the link.
+// Keep this function self-contained for executeScript and the userscript.
+export function activateSearchStreakLink(activate = false) {
+  const normalize = value => String(value ?? "").replace(/\s+/g, " ").trim();
+  const view = document.defaultView || globalThis;
+  const visible = element => {
+    if (element.hidden || element.closest?.('[hidden], [aria-hidden="true"]') ||
+        (element.getClientRects && element.getClientRects().length === 0)) return false;
+    const style = view.getComputedStyle?.(element);
+    return !style || (style.display !== "none" &&
+      !["hidden", "collapse"].includes(style.visibility) && style.opacity !== "0");
+  };
+  const dialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"], [aria-modal="true"]'))
+    .filter(dialog => {
+      if (!visible(dialog)) return false;
+      const labelledBy = normalize(dialog.getAttribute("aria-labelledby"));
+      const title = labelledBy
+        ? normalize(labelledBy.split(" ").map(id => document.getElementById(id)?.textContent).join(" "))
+        : normalize(dialog.getAttribute("aria-label") || dialog.querySelector("h1, h2, h3")?.textContent);
+      return /^(?:(?:必[应應]|bing)\s*(?:搜索|搜尋)\s*(?:连续|連續)\s*(?:打卡|签到|簽到)|bing\s+search\s+streak)$/i.test(title);
+    });
+  if (dialogs.length > 1) throw new Error("SEARCH_STREAK_LINK_NOT_UNIQUE");
+  if (dialogs.length === 0) return null;
+  const links = Array.from(dialogs[0].querySelectorAll("a[href]")).filter(link =>
+    visible(link) && !link.disabled && !link.hasAttribute("disabled") &&
+    link.getAttribute("aria-disabled") !== "true" &&
+    /^(?:立即搜索|立即搜尋|search\s+now)$/i.test(normalize(link.innerText || link.textContent || link.getAttribute("aria-label"))),
+  );
+  if (links.length > 1) throw new Error("SEARCH_STREAK_LINK_NOT_UNIQUE");
+  if (links.length === 0) return null;
+  const link = links[0];
+  let url;
+  try {
+    url = new URL(link.href || link.getAttribute("href"), location.href);
+    if (url.protocol !== "https:" || url.username || url.password || url.port ||
+        !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) throw new Error();
+  } catch {
+    throw new Error("SEARCH_STREAK_LINK_UNSAFE");
+  }
+  if (activate) {
+    link.setAttribute("target", "_self");
+    link.click();
+  }
+  return { url: url.href, activated: Boolean(activate) };
+}

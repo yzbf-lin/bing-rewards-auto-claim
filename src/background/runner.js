@@ -177,7 +177,7 @@ export function createClaimRunner({
           const actionContext = recognition.reason === "SEARCH_STREAK" ? { ...context, searchQuery } : context;
           const actionResult = entry.kind === "link"
             ? await driver.executeLink(entry, actionContext)
-            : await driver.executeButton(entry, context);
+            : await driver.executeButton(entry, actionContext);
           let outcome = "COMPLETED";
           let reason = actionResult?.reason ?? "ACTION_TRIGGERED";
 

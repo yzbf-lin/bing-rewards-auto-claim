@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.4.3
+// @version      0.4.4
 // @description  自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
@@ -25,7 +25,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.4.3";
+  const VERSION = "0.4.4";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
@@ -65,6 +65,10 @@
     SEARCH_STREAK_ALREADY_ATTEMPTED: "本轮已尝试搜索打卡，不重复提交",
     SEARCH_STREAK_UNAVAILABLE: "搜索打卡当前不可用，未提交搜索",
     SEARCH_STREAK_COMPLETED: "今日搜索已确认 1/1",
+    SEARCH_STREAK_LINK_UNAVAILABLE: "搜索打卡弹窗未出现可用的“立即搜索”入口",
+    SEARCH_STREAK_LINK_NOT_UNIQUE: "搜索打卡弹窗入口不唯一，已停止",
+    SEARCH_STREAK_LINK_UNSAFE: "搜索打卡弹窗链接不受支持",
+    SEARCH_STREAK_NAVIGATION_NOT_CONFIRMED: "未进入搜索打卡目标页，请重新运行",
     SEARCH_QUERY_REQUIRED: "请在设置中保存打卡搜索词",
     SEARCH_QUERY_INVALID: "搜索词需为不超过 200 字的单行文本",
     SEARCH_FORM_UNAVAILABLE: "未找到可用的 Bing 搜索框",
@@ -251,12 +255,19 @@
   }
 
   function getSearchStreakProgress(entry) {
-    if (!entry || entry.kind !== "link") return null;
-    try {
-      const url = new URL(entry.url);
-      if (url.protocol !== "https:" || url.username || url.password || url.port ||
-          !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return null;
-    } catch {
+    if (!entry) return null;
+    if (entry.kind === "button") {
+      const section = String(entry.section ?? "").replace(/\s+/g, " ").trim();
+      if (entry.url != null || !/^(?:连续打卡任务|連續打卡任務)$/.test(section)) return null;
+    } else if (entry.kind === "link") {
+      try {
+        const url = new URL(entry.url);
+        if (url.protocol !== "https:" || url.username || url.password || url.port ||
+            !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return null;
+      } catch {
+        return null;
+      }
+    } else {
       return null;
     }
 
@@ -269,7 +280,7 @@
     if (matches.length !== 1) return null;
     const current = Number(matches[0][1]);
     const total = Number(matches[0][2]);
-    return Number.isSafeInteger(current) && total === 1 ? { current, total } : null;
+    return Number.isSafeInteger(current) && total === 1 && current <= total ? { current, total } : null;
   }
 
   function searchQuerySetting(value = readValue(SEARCH_QUERY_KEY, "")) {
@@ -363,6 +374,50 @@
     }
     // This reports a submission attempt; Rewards progress is verified by the caller.
     return { submitted: true };
+  }
+
+  function activateSearchStreakLink(activate = false) {
+    const normalize = value => String(value ?? "").replace(/\s+/g, " ").trim();
+    const view = document.defaultView || globalThis;
+    const visible = element => {
+      if (element.hidden || element.closest?.('[hidden], [aria-hidden="true"]') ||
+          (element.getClientRects && element.getClientRects().length === 0)) return false;
+      const style = view.getComputedStyle?.(element);
+      return !style || (style.display !== "none" &&
+        !["hidden", "collapse"].includes(style.visibility) && style.opacity !== "0");
+    };
+    const dialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"], [aria-modal="true"]'))
+      .filter(dialog => {
+        if (!visible(dialog)) return false;
+        const labelledBy = normalize(dialog.getAttribute("aria-labelledby"));
+        const title = labelledBy
+          ? normalize(labelledBy.split(" ").map(id => document.getElementById(id)?.textContent).join(" "))
+          : normalize(dialog.getAttribute("aria-label") || dialog.querySelector("h1, h2, h3")?.textContent);
+        return /^(?:(?:必[应應]|bing)\s*(?:搜索|搜尋)\s*(?:连续|連續)\s*(?:打卡|签到|簽到)|bing\s+search\s+streak)$/i.test(title);
+      });
+    if (dialogs.length > 1) throw new Error("SEARCH_STREAK_LINK_NOT_UNIQUE");
+    if (dialogs.length === 0) return null;
+    const links = Array.from(dialogs[0].querySelectorAll("a[href]")).filter(link =>
+      visible(link) && !link.disabled && !link.hasAttribute("disabled") &&
+      link.getAttribute("aria-disabled") !== "true" &&
+      /^(?:立即搜索|立即搜尋|search\s+now)$/i.test(normalize(link.innerText || link.textContent || link.getAttribute("aria-label"))),
+    );
+    if (links.length > 1) throw new Error("SEARCH_STREAK_LINK_NOT_UNIQUE");
+    if (links.length === 0) return null;
+    const link = links[0];
+    let url;
+    try {
+      url = new URL(link.href || link.getAttribute("href"), location.href);
+      if (url.protocol !== "https:" || url.username || url.password || url.port ||
+          !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) throw new Error();
+    } catch {
+      throw new Error("SEARCH_STREAK_LINK_UNSAFE");
+    }
+    if (activate) {
+      link.setAttribute("target", "_self");
+      link.click();
+    }
+    return { url: url.href, activated: Boolean(activate) };
   }
 
   function analyzeEntryFeatures(entry) {
@@ -1196,6 +1251,81 @@
     return beijingDateKey(new Date(state.startedAt)) !== beijingDateKey();
   }
 
+  async function openPendingSearchDialog(state) {
+    if (!refreshOwnedState(state) || state.phase !== "search-streak-dialog") return;
+    if (searchStreakDateChanged(state)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_DATE_CHANGED");
+      return;
+    }
+    if (!isCurrentUrl(state.pending.entry.sourceUrl || REWARDS_URL)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NAVIGATION_NOT_CONFIRMED");
+      return;
+    }
+    setCurrentStep(state, "正在等待搜索打卡弹窗", state.pending.entry.section);
+    let link;
+    try {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (!refreshOwnedState(state) || state.phase !== "search-streak-dialog") return;
+        link = activateSearchStreakLink();
+        if (link) break;
+        if (attempt < 29) await delay(500);
+      }
+    } catch (error) {
+      await finishPendingAction(state, "FAILED", error.message || "SEARCH_STREAK_LINK_UNAVAILABLE");
+      return;
+    }
+    if (!link) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_LINK_UNAVAILABLE");
+      return;
+    }
+    // The original link may unload immediately: record the next phase first.
+    state.pending.searchLandingUrl = link.url;
+    state.pending.searchNavigationDocumentId = DOCUMENT_ID;
+    state.phase = "search-streak-navigate";
+    appendLog(state, "SEARCH_STREAK_LINK_CLICK", { destination: link.url });
+    setState(state);
+    const restoreWindowOpen = forceWindowOpenIntoCurrentTab();
+    let activated;
+    try {
+      activated = activateSearchStreakLink(true);
+    } catch (error) {
+      restoreWindowOpen();
+      await finishPendingAction(state, "FAILED", error.message || "SEARCH_STREAK_LINK_UNAVAILABLE");
+      return;
+    }
+    if (!activated?.activated) {
+      restoreWindowOpen();
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_LINK_UNAVAILABLE");
+      return;
+    }
+    await delay(250);
+    restoreWindowOpen();
+    await navigatePendingSearch(state);
+  }
+
+  async function navigatePendingSearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "search-streak-navigate") return;
+    if (searchStreakDateChanged(state)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_DATE_CHANGED");
+      return;
+    }
+    if (isCurrentUrl(state.pending.entry.sourceUrl || REWARDS_URL)) {
+      if (state.pending.searchNavigationDocumentId === DOCUMENT_ID &&
+          isTrustedDestination(state.pending.searchLandingUrl)) {
+        location.assign(state.pending.searchLandingUrl);
+        return;
+      }
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NAVIGATION_NOT_CONFIRMED");
+      return;
+    }
+    if (!isTrustedDestination(location.href) || new URL(location.href).hostname === "rewards.bing.com") {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NAVIGATION_NOT_CONFIRMED");
+      return;
+    }
+    await delay(SETTLE_DELAY_MS);
+    await finishPendingAction(state);
+  }
+
   async function submitPendingSearch(state) {
     if (!refreshOwnedState(state) || !state.pending ||
         !["search-streak-submit", "search-streak-wait"].includes(state.phase)) return;
@@ -1310,9 +1440,25 @@
       return;
     }
 
+    const searchStreak = state.pending.recognition.reason === "SEARCH_STREAK";
+    if (searchStreak) {
+      const progress = getSearchStreakProgress(matches[0]);
+      if (matches[0].disabled) {
+        await finishPendingAction(state, "FAILED", "SEARCH_STREAK_UNAVAILABLE");
+        return;
+      }
+      if (progress?.current >= 1) {
+        await finishPendingAction(state, "COMPLETED", "SEARCH_STREAK_COMPLETED");
+        return;
+      }
+      if (!progress || matches[0].signals?.completed === true) {
+        await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NOT_CONFIRMED");
+        return;
+      }
+    }
     if (entry.action === "claim-points") state.pending.claimBefore = matches[0].rewardPoints;
 
-    state.phase = "execute-button-wait";
+    state.phase = searchStreak ? "search-streak-dialog" : "execute-button-wait";
     appendLog(state, "CARD_CLICK", {
       kind: "button",
       title: entry.title,
@@ -1325,6 +1471,10 @@
     restoreWindowOpen();
     if (!activated) {
       await finishPendingAction(state, "FAILED", "BUTTON_ACTIVATION_FAILED");
+      return;
+    }
+    if (searchStreak) {
+      await openPendingSearchDialog(state);
       return;
     }
     await finishPendingAction(state);
@@ -1446,7 +1596,7 @@
         return;
       }
 
-      state.phase = "execute-button";
+      state.phase = searchSettings ? "search-streak-open" : "execute-button";
       setState(state);
       await executeButton(state);
       return;
@@ -1539,6 +1689,18 @@
   async function resumePhase(state) {
     await initializeTabIdentity();
     if (!refreshOwnedState(state)) return;
+    if (state.phase === "search-streak-open") {
+      await executeButton(state);
+      return;
+    }
+    if (state.phase === "search-streak-dialog") {
+      await openPendingSearchDialog(state);
+      return;
+    }
+    if (state.phase === "search-streak-navigate") {
+      await navigatePendingSearch(state);
+      return;
+    }
     if (state.phase === "search-streak-submit") {
       await submitPendingSearch(state);
       return;
@@ -2157,6 +2319,7 @@
     bindSearchSettings,
     getSearchStreakProgress,
     submitBingSearch,
+    activateSearchStreakLink,
     createRewardsFloatingWidget,
     inferCompleted,
     analyzeEntryFeatures,

@@ -1,11 +1,18 @@
 // Keep this function self-contained so the userscript can use the same recognizer.
 export function getSearchStreakProgress(entry) {
-  if (!entry || entry.kind !== "link") return null;
-  try {
-    const url = new URL(entry.url);
-    if (url.protocol !== "https:" || url.username || url.password || url.port ||
-        !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return null;
-  } catch {
+  if (!entry) return null;
+  if (entry.kind === "button") {
+    const section = String(entry.section ?? "").replace(/\s+/g, " ").trim();
+    if (entry.url != null || !/^(?:连续打卡任务|連續打卡任務)$/.test(section)) return null;
+  } else if (entry.kind === "link") {
+    try {
+      const url = new URL(entry.url);
+      if (url.protocol !== "https:" || url.username || url.password || url.port ||
+          !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return null;
+    } catch {
+      return null;
+    }
+  } else {
     return null;
   }
 
@@ -18,5 +25,5 @@ export function getSearchStreakProgress(entry) {
   if (matches.length !== 1) return null;
   const current = Number(matches[0][1]);
   const total = Number(matches[0][2]);
-  return Number.isSafeInteger(current) && total === 1 ? { current, total } : null;
+  return Number.isSafeInteger(current) && total === 1 && current <= total ? { current, total } : null;
 }

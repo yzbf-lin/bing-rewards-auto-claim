@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { getSearchStreakProgress } from "../src/shared/search-streak.js";
-import { submitBingSearch } from "../src/content/search-actions.js";
+import { activateSearchStreakLink, submitBingSearch } from "../src/content/search-actions.js";
 
 const source = readFileSync(new URL("../userscript/bing-rewards-auto-claim.user.js", import.meta.url), "utf8");
 const sourceUrl = "https://rewards.bing.com/earn";
@@ -11,7 +11,7 @@ const queryKey = "bingRewardsAutoClaimSearchQuery";
 const stateKey = "bingRewardsAutoClaimState";
 const candidate = { section: "连续打卡任务", title: "必应搜索连续打卡", text: "必应搜索连续打卡 +3 搜索: 0/1", kind: "link", url: "https://www.bing.com/", source: "earn", sourceUrl };
 
-function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, href = sourceUrl, progress = 0, missing = false, wrongCard = false, delayedReads = 0, preventSubmit = false, unloadOnCardNavigation = false, unloadOnSearchNavigation = false } = {}) {
+function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, href = sourceUrl, progress = 0, missing = false, wrongCard = false, delayedReads = 0, preventSubmit = false, unloadOnCardNavigation = false, unloadOnSearchNavigation = false, buttonCard = false } = {}) {
   const location = { href, assign(value) { this.href = value; } };
   let unloaded = false;
   const counters = { submissions: 0, clicks: 0, reads: 0, writes: [] };
@@ -19,7 +19,7 @@ function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, hre
   const attrs = new Map();
   const title = wrongCard ? "每日连续打卡活动" : candidate.title;
   const card = {
-    tagName: "A", href: candidate.url,
+    tagName: buttonCard ? "BUTTON" : "A", href: buttonCard ? null : candidate.url,
     get innerText() { return `${title} +3 搜索: ${++counters.reads > delayedReads ? progress : 0}/1`; },
     getAttribute(name) { return attrs.get(name) ?? null; },
     setAttribute(name, value) { attrs.set(name, value); },
@@ -27,7 +27,7 @@ function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, hre
     hasAttribute(name) { return attrs.has(name); },
     querySelector(selector) { return selector === "img[alt]" ? { getAttribute: () => title } : null; },
     querySelectorAll() { return []; },
-    click() { counters.clicks++; location.assign(candidate.url); unloaded = unloadOnCardNavigation; },
+    click() { counters.clicks++; if (!buttonCard) location.assign(candidate.url); unloaded = unloadOnCardNavigation; },
   };
   const groups = names.map((name, index) => ({ getAttribute: (key) => key === "aria-label" ? name : null, querySelectorAll: () => !index && !missing ? [card] : [] }));
   card.parentElement = groups[0];
@@ -102,7 +102,7 @@ function pendingRun(rt, phase = "search-streak-submit") {
 
 test("userscript embeds the same search recognition and native submission helpers", () => {
   const { api } = runtime();
-  for (const helper of [getSearchStreakProgress, submitBingSearch]) {
+  for (const helper of [getSearchStreakProgress, submitBingSearch, activateSearchStreakLink]) {
     assert.equal(api[helper.name]?.toString().replace(/\s+/g, " "), helper.toString().replace(/\s+/g, " "));
   }
   assert.equal(api.classifyEntry(candidate).reason, "SEARCH_STREAK");
@@ -121,6 +121,17 @@ test("empty and malformed saved queries skip search without interrupting the run
     assert.equal(rt.counters.clicks, 0);
     assert.equal(rt.counters.submissions, 0);
   }
+});
+
+test("a button-based streak waits for its dialog instead of submitting a search on Rewards", async () => {
+  const rt = runtime({ buttonCard: true, store: new Map([[queryKey, "aurora forecast"]]) });
+  const state = rt.api.createRun("manual");
+  state.catalog = [{ ...candidate, kind: "button", url: null }];
+  state.claimsRefreshed = true;
+  await rt.api.executeCatalog(state);
+  assert.equal(rt.counters.clicks, 1);
+  assert.equal(rt.counters.submissions, 0);
+  assert.equal(state.results[0]?.reason, "SEARCH_STREAK_LINK_UNAVAILABLE");
 });
 
 test("saved query survives the card navigation and only verified progress completes the task", async () => {

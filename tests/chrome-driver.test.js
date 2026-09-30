@@ -130,6 +130,111 @@ function searchStreakFake({ before = [searchStreakEntry], after, submitError, na
   return { ...fake, submissions, listeners, verificationReads: () => verificationReads };
 }
 
+const searchStreakButton = {
+  ...searchStreakEntry,
+  section: "连续打卡任务",
+  kind: "button",
+  url: null,
+};
+
+function searchStreakButtonFake({ before = [searchStreakButton], after, readyAfter = 1, modalError, popup = false } = {}) {
+  const fake = searchStreakFake({ before, after });
+  const execute = fake.api.scripting.executeScript;
+  const actions = [];
+  let modalReads = 0;
+  fake.api.scripting.executeScript = async options => {
+    if (options.func?.name === "activateRewardsButton") actions.push("card");
+    if (options.func?.name === "submitBingSearch") actions.push("search");
+    if (options.func?.name === "activateSearchStreakLink") {
+      if (modalError) throw new Error(modalError);
+      if (!options.args?.[0]) {
+        modalReads++;
+        return [{ result: modalReads >= readyAfter ? { url: "https://www.bing.com/?form=ML2PCO", activated: false } : null }];
+      }
+      actions.push("modal");
+      const opened = { id: popup ? 7 : options.target.tabId, status: "complete", url: "https://www.bing.com/?form=ML2PCO" };
+      if (popup) opened.openerTabId = options.target.tabId;
+      fake.seedTab(opened);
+      if (popup) for (const listener of [...fake.listeners.onCreated]) listener(opened);
+      return [{ result: { url: opened.url, activated: true } }];
+    }
+    return execute(options);
+  };
+  return { ...fake, actions, modalReads: () => modalReads };
+}
+
+test("opens the real button card and hydrated modal link before submitting and verifying a search", async () => {
+  for (const [targetTabId, popup] of [[99, false], [undefined, false], [undefined, true], [99, true]]) {
+    const fake = searchStreakButtonFake({
+      readyAfter: 3, popup,
+      after: [{ ...searchStreakButton, text: "必应搜索连续打卡 搜索: 1/1 连续 3/7 天" }],
+    });
+    if (targetTabId) fake.seedTab({ id: targetTabId, url: searchStreakButton.sourceUrl });
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 4, timeoutMs: 80 });
+
+    const result = await driver.executeButton(searchStreakButton, { targetTabId, searchQuery: "user-private-query" });
+
+    assert.deepEqual(result, { finalUrl: searchStreakButton.sourceUrl, reason: "SEARCH_STREAK_COMPLETED" });
+    assert.deepEqual(fake.actions, ["card", "modal", "search"]);
+    assert.equal(fake.modalReads(), 3);
+    assert.equal(fake.submissions.length, 1);
+    assert.equal(fake.submissions[0].tabId, targetTabId ?? (popup ? 7 : 1));
+    assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+    assert.deepEqual(fake.removed, targetTabId ? popup ? [7] : [] : popup ? [7, 1] : [1]);
+    assert.equal(JSON.stringify(result).includes("user-private-query"), false);
+  }
+});
+
+test("a search button without a query never opens the card or a temporary tab", async () => {
+  const fake = searchStreakButtonFake();
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  await assert.rejects(driver.executeButton(searchStreakButton), /SEARCH_QUERY_REQUIRED/);
+
+  assert.deepEqual(fake.actions, []);
+  assert.deepEqual(fake.removed, []);
+});
+
+test("a freshly completed search button is confirmed without opening its modal", async () => {
+  const fake = searchStreakButtonFake({ before: [{ ...searchStreakButton, text: "搜索: 1/1" }] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeButton(searchStreakButton, { searchQuery: "user-private-query" });
+
+  assert.equal(result.reason, "SEARCH_STREAK_COMPLETED");
+  assert.deepEqual(fake.actions, []);
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("a missing or rejected search modal never triggers a search or reports completion", async () => {
+  for (const [settings, error] of [
+    [{ readyAfter: Infinity }, "SEARCH_STREAK_LINK_UNAVAILABLE"],
+    [{ modalError: "SEARCH_STREAK_LINK_NOT_UNIQUE" }, "SEARCH_STREAK_LINK_NOT_UNIQUE"],
+    [{ modalError: "SEARCH_STREAK_LINK_UNSAFE" }, "SEARCH_STREAK_LINK_UNSAFE"],
+  ]) {
+    const fake = searchStreakButtonFake(settings);
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 3 });
+
+    await assert.rejects(driver.executeButton(searchStreakButton, { searchQuery: "user-private-query" }), new RegExp(error));
+
+    assert.deepEqual(fake.actions, ["card"]);
+    assert.equal(fake.modalReads(), settings.readyAfter ? 3 : 0);
+    assert.deepEqual(fake.removed, [1]);
+    assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+  }
+});
+
+test("opening a search modal and submitting does not complete an unchanged button card", async () => {
+  const fake = searchStreakButtonFake();
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 3, timeoutMs: 80 });
+
+  await assert.rejects(driver.executeButton(searchStreakButton, { searchQuery: "user-private-query" }), /SEARCH_STREAK_NOT_CONFIRMED/);
+
+  assert.deepEqual(fake.actions, ["card", "modal", "search"]);
+  assert.equal(fake.verificationReads(), 3);
+  assert.deepEqual(fake.removed, [1]);
+});
+
 test("submits the configured search once and confirms the same Rewards card reaches 1/1", async () => {
   const completed = { ...searchStreakEntry, id: "refreshed-search-streak", text: "必应搜索连续打卡 搜索: 1/1 连续 3/7 天" };
   const fake = searchStreakFake({ after: read => read < 2 ? [searchStreakEntry] : [completed] });
