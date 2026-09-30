@@ -6,6 +6,8 @@ import {
   collectRewardsEntries,
 } from "../content/page-actions.js";
 import { solveImagePuzzle } from "../content/image-puzzle.js";
+import { submitBingSearch } from "../content/search-actions.js";
+import { getSearchStreakProgress } from "../shared/search-streak.js";
 import { analyzeEntryFeatures } from "../shared/task-policy.js";
 
 const REWARDS_URL = "https://rewards.bing.com/earn";
@@ -287,7 +289,11 @@ export function createChromeDriver({
       }
     },
 
-    async executeLink(entry, { targetTabId } = {}) {
+    async executeLink(entry, { targetTabId, searchQuery } = {}) {
+      const searchStreak = getSearchStreakProgress(entry);
+      if (searchStreak && (typeof searchQuery !== "string" || !searchQuery.trim())) {
+        throw new Error("SEARCH_QUERY_REQUIRED");
+      }
       const sourceUrl = entry.sourceUrl ?? REWARDS_URL;
       const collector = entry.source === "dashboard"
         ? collectDashboardEntries
@@ -313,7 +319,7 @@ export function createChromeDriver({
         let matches = catalog.entries.filter((candidate) =>
           candidate.section === entry.section &&
           candidate.title === entry.title &&
-          candidate.text === entry.text &&
+          (searchStreak || candidate.text === entry.text) &&
           candidate.kind === "link",
         );
         if (matches.length === 0) {
@@ -324,6 +330,16 @@ export function createChromeDriver({
           );
         }
         if (matches.length !== 1) throw new Error("LINK_NOT_UNIQUE");
+        if (searchStreak) {
+          const currentEntry = matches[0];
+          if (currentEntry.disabled) throw new Error("SEARCH_STREAK_UNAVAILABLE");
+          const currentProgress = getSearchStreakProgress(currentEntry);
+          if (!currentProgress) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+          if (currentProgress.current >= currentProgress.total) {
+            return { finalUrl: sourceUrl, reason: "SEARCH_STREAK_COMPLETED" };
+          }
+          if (currentEntry.signals?.completed === true) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+        }
 
         const activationSource = await chromeApi.tabs.get(sourceTab.id);
         const activation = await executeRewardsScript({
@@ -356,6 +372,45 @@ export function createChromeDriver({
           }
         }
         const finalUrl = resultTab.url ?? activationResult.url ?? entry.url;
+        if (searchStreak) {
+          // The helper waits for the hydrated form and submits once. Register the
+          // navigation listener first so a fast native submission is observed.
+          const searchResultTab = await waitForTabLoaded(resultTab.id, {
+            previousUrl: resultTab.url,
+            navigate: async () => {
+              const results = await executeRewardsScript({
+                target: { tabId: resultTab.id },
+                func: submitBingSearch,
+                args: [searchQuery],
+              });
+              if (!results?.[0]?.result?.submitted) throw new Error("SEARCH_SUBMIT_FAILED");
+            },
+          });
+          if (!canScriptRewardsPage(searchResultTab.url) ||
+              (searchResultTab.pendingUrl && !canScriptRewardsPage(searchResultTab.pendingUrl))) {
+            throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
+          }
+          const searchResultUrl = new URL(searchResultTab.url);
+          const resultQueries = searchResultUrl.searchParams.getAll("q");
+          if (!/^\/search\/?$/i.test(searchResultUrl.pathname) ||
+              resultQueries.length !== 1 || resultQueries[0] !== searchQuery.trim()) {
+            throw new Error("SEARCH_SUBMIT_NOT_CONFIRMED");
+          }
+          await delay(settleDelayMs);
+          await navigateExistingTab(resultTab.id, sourceUrl, Boolean(targetTabId));
+          for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
+            const refreshed = await collectOnce(resultTab.id, collector, collectorArgs);
+            const candidates = refreshed.entries.filter(candidate =>
+              candidate.section === entry.section && candidate.title === entry.title,
+            );
+            const progress = candidates.length === 1 ? getSearchStreakProgress(candidates[0]) : null;
+            if (progress && progress.current >= progress.total) {
+              return { finalUrl: sourceUrl, reason: "SEARCH_STREAK_COMPLETED" };
+            }
+            if (attempt < catalogAttempts - 1) await delay(500);
+          }
+          throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+        }
         if (analyzeEntryFeatures(entry).imagePuzzle) {
           if (!analyzeEntryFeatures({ kind: "link", url: finalUrl }).imagePuzzle) {
             throw new Error("PUZZLE_PAGE_UNAVAILABLE");

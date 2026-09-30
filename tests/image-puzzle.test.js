@@ -97,9 +97,12 @@ test("userscript resumes a navigated puzzle before recording completion", async 
     setTimeout: (callback) => { callback(); return 1; },
     GM_getValue: (key, fallback) => store.get(key) ?? fallback,
     GM_setValue: (key, value) => store.set(key, structuredClone(value)),
+    GM_getTab: (callback) => callback({}),
+    GM_saveTab() {},
   });
   vm.runInContext(userscript, context);
   const api = context.__BING_REWARDS_USERSCRIPT_API__;
+  await api.initializeTabIdentity();
   const state = api.createRun("manual");
   const entry = { title: "拼图", text: "拼图 +5", kind: "link", url: location.href, section: "每日活动" };
   state.catalog = [entry];

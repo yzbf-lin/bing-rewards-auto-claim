@@ -1,3 +1,5 @@
+import { getSearchStreakProgress } from "./search-streak.js";
+
 const COMPLEX_TASK_PATTERNS = [
   /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
   /答题|测验|trivia/i,
@@ -72,7 +74,8 @@ export function analyzeEntryFeatures(entry) {
   const navigationOnly = entry.kind === "link";
   const trustedDestination = navigationOnly && isTrustedDestination(url);
   const imagePuzzle = trustedDestination && /^\/spotlight\/imagepuzzle\/?$/i.test(new URL(url).pathname);
-  const completed = signals.completed ?? inferCompleted(searchable);
+  const searchStreakProgress = getSearchStreakProgress(entry);
+  const completed = (searchStreakProgress?.current >= 1) || (signals.completed ?? inferCompleted(searchable));
   const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
   const clickOnlyCue = signals.clickOnlyCue ?? (
     CLICK_ONLY_PATTERN.test(searchable) || /[?&]rnoreward=1(?:&|$)/i.test(url)
@@ -111,6 +114,7 @@ export function analyzeEntryFeatures(entry) {
     navigationOnly,
     trustedDestination,
     imagePuzzle,
+    searchStreakProgress,
     puzzleTask,
     opensNewTab,
     interactiveQuiz,
@@ -145,6 +149,10 @@ export function classifyEntry(entry) {
 
   if (features.imagePuzzle && features.hasRewardSignal) {
     return { decision: "ELIGIBLE", reason: "IMAGE_PUZZLE", rewardPoints };
+  }
+
+  if (features.searchStreakProgress?.current === 0) {
+    return { decision: "ELIGIBLE", reason: "SEARCH_STREAK", rewardPoints };
   }
 
   if (features.interactiveQuiz && !features.dailyActivityLink) {

@@ -236,7 +236,7 @@ test("standalone userscript keeps the floating widget identical to the extension
   assert.equal(normalized(loadApi().createRewardsFloatingWidget), normalized(context.createRewardsFloatingWidget));
 });
 
-function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), location = { href: "https://rewards.bing.com/dashboard" } } = {}) {
+function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), tabData = {}, location = { href: "https://rewards.bing.com/dashboard" } } = {}) {
   let balance = points;
   let clicks = 0;
   let reads = 0;
@@ -268,15 +268,20 @@ function claimRuntime({ points = 30, unknownReads = 0, store = new Map(), locati
     document, location, window: { location, open() {} },
     GM_getValue: (key, fallback) => store.has(key) ? structuredClone(store.get(key)) : fallback,
     GM_setValue: (key, value) => store.set(key, structuredClone(value)),
+    GM_getTab: (callback) => callback(structuredClone(tabData)),
+    GM_saveTab: (value) => Object.assign(tabData, structuredClone(value)),
     setTimeout: (callback) => { callback(); return 1; },
     console: { info() {}, warn() {} },
   };
-  return { ...loadRuntime(overrides), store, location, get clicks() { return clicks; } };
+  const runtime = loadRuntime(overrides);
+  const ready = runtime.api.initializeTabIdentity();
+  return { ...runtime, ready, store, tabData, location, get clicks() { return clicks; } };
 }
 
 test("userscript resumes its final dashboard scan after navigation and claims only once", async () => {
   const location = { href: "https://www.bing.com/search?q=last-task" };
   const first = claimRuntime({ location });
+  await first.ready;
   const state = first.api.createRun("automatic");
   state.phase = "execute";
   // A prior successful claim today must not suppress a new positive balance.
@@ -288,7 +293,8 @@ test("userscript resumes its final dashboard scan after navigation and claims on
   assert.equal(location.href, "https://rewards.bing.com/dashboard");
   assert.equal(first.clicks, 0);
 
-  const next = claimRuntime({ location, store: first.store });
+  const next = claimRuntime({ location, store: first.store, tabData: first.tabData });
+  await next.ready;
   const restored = next.store.get("bingRewardsAutoClaimState");
   await next.api.resumePhase(restored);
   assert.equal(restored.results.length, 1);
@@ -304,6 +310,7 @@ test("userscript resumes its final dashboard scan after navigation and claims on
 
 test("userscript does not turn a restored unconfirmed claim into success", async () => {
   const runtime = claimRuntime();
+  await runtime.ready;
   const state = runtime.api.createRun("manual");
   const entry = { ...runtime.api.collectDashboardEntries().entries[0], source: "dashboard", sourceUrl: runtime.location.href };
   state.catalog = [entry];
@@ -318,6 +325,7 @@ test("userscript does not turn a restored unconfirmed claim into success", async
 
 test("userscript final scan waits for the claim balance to hydrate", async () => {
   const runtime = claimRuntime({ unknownReads: 3 });
+  await runtime.ready;
   const state = runtime.api.createRun("manual");
   state.phase = "rescan-dashboard";
   await runtime.api.resumePhase(state);
@@ -328,6 +336,7 @@ test("userscript final scan waits for the claim balance to hydrate", async () =>
 
 test("userscript reports an unavailable balance instead of assuming there is nothing to claim", async () => {
   const runtime = claimRuntime({ unknownReads: Infinity });
+  await runtime.ready;
   const state = runtime.api.createRun("manual");
   state.phase = "rescan-dashboard";
   await assert.rejects(runtime.api.resumePhase(state), /CLAIM_BALANCE_UNAVAILABLE/);
@@ -336,6 +345,7 @@ test("userscript reports an unavailable balance instead of assuming there is not
 
 test("userscript preserves verified puzzle completion after Bing redirects away", async () => {
   const runtime = claimRuntime({ location: { href: "https://www.bing.com/spotlight?q=finished" } });
+  await runtime.ready;
   const state = runtime.api.createRun("manual");
   const entry = { title: "拼图", text: "拼图 +5", kind: "link", url: "https://www.bing.com/spotlight/imagepuzzle", section: "每日活动" };
   state.catalog = [entry];

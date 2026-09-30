@@ -15,7 +15,13 @@ const extensionVersion = document.querySelector("#extension-version");
 const liveProgress = document.querySelector("#live-progress");
 const liveProgressMeta = document.querySelector("#live-progress-meta");
 const liveProgressTitle = document.querySelector("#live-progress-title");
+const searchSettingsForm = document.querySelector("#search-settings-form");
+const searchQueryInput = document.querySelector("#search-query");
+const saveSearchQuery = document.querySelector("#save-search-query");
+const searchSettingsFeedback = document.querySelector("#search-settings-feedback");
 let availableUpdate = null;
+let searchSettingsRevision = 0;
+let searchSettingsSaving = false;
 
 document.body.classList.toggle(
   "embedded",
@@ -109,6 +115,72 @@ async function refresh() {
   renderUpdate(state.updateStatus);
 }
 
+function normalizeSearchQuery(value) {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/.test(value) || value.trim().length > 200) {
+    throw new Error("搜索词不能包含控制字符，且最多为 200 个字符。");
+  }
+  return value.trim();
+}
+
+async function loadSearchSettings() {
+  const revision = searchSettingsRevision;
+  try {
+    const state = await chrome.storage.local.get("searchQuery");
+    if (revision !== searchSettingsRevision) return;
+    searchQueryInput.value = normalizeSearchQuery(state.searchQuery ?? "");
+  } catch {
+    if (revision !== searchSettingsRevision) return;
+    searchSettingsFeedback.textContent = "读取搜索设置失败，请重新填写并保存。";
+    searchSettingsFeedback.dataset.status = "error";
+  }
+}
+
+searchQueryInput.addEventListener("input", () => {
+  searchSettingsRevision += 1;
+  searchQueryInput.removeAttribute("aria-invalid");
+  searchSettingsFeedback.textContent = "修改尚未保存。";
+  searchSettingsFeedback.dataset.status = "";
+});
+
+searchSettingsForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (searchSettingsSaving) return;
+  const revision = ++searchSettingsRevision;
+  let searchQuery;
+  try {
+    searchQuery = normalizeSearchQuery(searchQueryInput.value);
+  } catch (error) {
+    searchQueryInput.setAttribute("aria-invalid", "true");
+    searchSettingsFeedback.textContent = error.message;
+    searchSettingsFeedback.dataset.status = "error";
+    return;
+  }
+
+  searchSettingsSaving = true;
+  saveSearchQuery.disabled = true;
+  searchQueryInput.removeAttribute("aria-invalid");
+  searchSettingsFeedback.textContent = "正在保存…";
+  searchSettingsFeedback.dataset.status = "";
+  try {
+    await chrome.storage.local.set({ searchQuery });
+    if (revision === searchSettingsRevision) {
+      searchQueryInput.value = searchQuery;
+      searchSettingsFeedback.textContent = searchQuery
+        ? "已保存在本机，下次任务将使用此搜索词。"
+        : "已清除本机搜索词，后续任务将跳过搜索打卡。";
+      searchSettingsFeedback.dataset.status = "success";
+    } else {
+      searchSettingsFeedback.textContent = "已保存上次提交的设置；当前修改尚未保存。";
+    }
+  } catch {
+    searchSettingsFeedback.textContent = "保存失败，请重试。输入内容已保留。";
+    searchSettingsFeedback.dataset.status = "error";
+  } finally {
+    searchSettingsSaving = false;
+    saveSearchQuery.disabled = false;
+  }
+});
+
 runButton.addEventListener("click", async () => {
   feedback.textContent = "正在启动领取任务…";
   runButton.disabled = true;
@@ -157,6 +229,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   ) refresh();
 });
 
+loadSearchSettings();
 refresh();
 chrome.runtime.sendMessage({ type: "CHECK_FOR_UPDATE" }).then((response) => {
   if (response?.ok) renderUpdate(response.updateStatus);

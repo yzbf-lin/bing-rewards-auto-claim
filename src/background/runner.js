@@ -54,7 +54,11 @@ export function createClaimRunner({
         logger.warn("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
       }
     }
-    const stored = await storage.get("taskMemory");
+    const stored = await storage.get(["taskMemory", "searchQuery"]);
+    const rawSearchQuery = stored.searchQuery ?? "";
+    const searchQuery = typeof rawSearchQuery === "string" ? rawSearchQuery.trim() : "";
+    const searchQueryError = typeof rawSearchQuery !== "string" || searchQuery.length > 200 || /[\u0000-\u001f\u007f]/.test(rawSearchQuery)
+      ? "SEARCH_QUERY_INVALID" : !searchQuery ? "SEARCH_QUERY_REQUIRED" : null;
     let taskMemory = stored.taskMemory ?? {};
     const runDateKey = beijingDateKey(startedAt);
 
@@ -103,6 +107,7 @@ export function createClaimRunner({
       await storage.set({ currentRun: run });
 
       let claimsRefreshed = !canRefreshClaims;
+      let searchStreakAttempted = false;
       for (let entryIndex = 0; entryIndex < (catalog.entries ?? []).length || !claimsRefreshed; entryIndex += 1) {
         if (entryIndex === catalog.entries.length && !claimsRefreshed) {
           claimsRefreshed = true;
@@ -129,7 +134,7 @@ export function createClaimRunner({
 
         const recognition = classifyEntry(entry);
         const previous = taskMemory[taskMemoryKey(entry)];
-        const decision =
+        let decision =
           trigger !== "manual" &&
           entry.action !== "claim-points" &&
           recognition.decision === "ELIGIBLE" &&
@@ -140,6 +145,12 @@ export function createClaimRunner({
               rewardPoints: recognition.rewardPoints,
             }
             : recognition;
+        if (decision.decision === "ELIGIBLE" && recognition.reason === "SEARCH_STREAK" && searchQueryError) {
+          decision = { ...recognition, decision: "SKIPPED", reason: searchQueryError };
+        }
+        if (decision.decision === "ELIGIBLE" && recognition.reason === "SEARCH_STREAK" && searchStreakAttempted) {
+          decision = { ...recognition, decision: "SKIPPED", reason: "SEARCH_STREAK_ALREADY_ATTEMPTED" };
+        }
         const itemStartedAt = now().getTime();
 
         if (decision.decision === "SKIPPED") {
@@ -162,8 +173,10 @@ export function createClaimRunner({
         }
 
         try {
+          if (recognition.reason === "SEARCH_STREAK") searchStreakAttempted = true;
+          const actionContext = recognition.reason === "SEARCH_STREAK" ? { ...context, searchQuery } : context;
           const actionResult = entry.kind === "link"
-            ? await driver.executeLink(entry, context)
+            ? await driver.executeLink(entry, actionContext)
             : await driver.executeButton(entry, context);
           let outcome = "COMPLETED";
           let reason = actionResult?.reason ?? "ACTION_TRIGGERED";

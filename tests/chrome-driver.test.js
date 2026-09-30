@@ -88,6 +88,279 @@ function chromeFake(
   };
 }
 
+const searchStreakEntry = {
+  id: "search-streak",
+  section: "日常任务",
+  title: "必应搜索连续打卡",
+  text: "必应搜索连续打卡 搜索: 0/1 连续 3/7 天",
+  kind: "link",
+  url: "https://www.bing.com/?form=REWARDS",
+  source: "earn",
+  sourceUrl: "https://rewards.bing.com/earn",
+};
+
+function searchStreakFake({ before = [searchStreakEntry], after, submitError, navigate = true } = {}) {
+  const fake = chromeFake({ missingSections: [], entries: before });
+  const execute = fake.api.scripting.executeScript;
+  const submissions = [];
+  const listeners = { onUpdated: new Set(), onRemoved: new Set(), onCreated: new Set() };
+  for (const [name, active] of Object.entries(listeners)) {
+    fake.api.tabs[name] = {
+      addListener: listener => active.add(listener),
+      removeListener: listener => active.delete(listener),
+    };
+  }
+  let verificationReads = 0;
+  fake.api.scripting.executeScript = async options => {
+    if (options.func?.name === "submitBingSearch") {
+      submissions.push({ tabId: options.target.tabId, query: options.args[0] });
+      if (submitError) throw new Error(submitError);
+      if (navigate) {
+        fake.seedTab({ id: options.target.tabId, url: "https://www.bing.com/search?q=user-private-query" });
+      }
+      return [{ result: { submitted: true } }];
+    }
+    if (options.func?.name === "collectRewardsEntries" && submissions.length > 0) {
+      verificationReads++;
+      const entries = typeof after === "function" ? after(verificationReads) : after ?? before;
+      return [{ result: { missingSections: [], entries: structuredClone(entries) } }];
+    }
+    return execute(options);
+  };
+  return { ...fake, submissions, listeners, verificationReads: () => verificationReads };
+}
+
+test("submits the configured search once and confirms the same Rewards card reaches 1/1", async () => {
+  const completed = { ...searchStreakEntry, id: "refreshed-search-streak", text: "必应搜索连续打卡 搜索: 1/1 连续 3/7 天" };
+  const fake = searchStreakFake({ after: read => read < 2 ? [searchStreakEntry] : [completed] });
+  fake.seedTab({ id: 99, url: searchStreakEntry.sourceUrl });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 3, timeoutMs: 80 });
+
+  const result = await driver.executeLink(searchStreakEntry, { targetTabId: 99, searchQuery: "user-private-query" });
+
+  assert.deepEqual(result, { finalUrl: searchStreakEntry.sourceUrl, reason: "SEARCH_STREAK_COMPLETED" });
+  assert.deepEqual(fake.submissions, [{ tabId: 99, query: "user-private-query" }]);
+  assert.deepEqual(fake.linkActivations, [{ tabId: 99, entryId: searchStreakEntry.id }]);
+  assert.equal(fake.verificationReads(), 2);
+  assert.deepEqual(fake.updates, [{ tabId: 99, options: { url: searchStreakEntry.sourceUrl, active: true } }]);
+  assert.equal(JSON.stringify(result).includes("user-private-query"), false);
+  assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+  assert.deepEqual(fake.removed, []);
+});
+
+test("requires a unique completed matching card after searching and never repeats the search", async () => {
+  const completed = { ...searchStreakEntry, text: "必应搜索连续打卡 搜索: 1/1" };
+  for (const after of [
+    [searchStreakEntry],
+    [searchStreakEntry, { ...completed, section: "其他任务" }],
+    [{ ...completed, title: "Bing search streak" }],
+    [searchStreakEntry, completed],
+  ]) {
+    const fake = searchStreakFake({ after });
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 3, timeoutMs: 80 });
+
+    await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /SEARCH_STREAK_NOT_CONFIRMED/);
+
+    assert.equal(fake.submissions.length, 1);
+    assert.equal(fake.verificationReads(), 3);
+    assert.deepEqual(fake.removed, [1]);
+    assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+  }
+});
+
+test("surfaces form hydration and submission failures without retrying the submission", async () => {
+  for (const submitError of ["SEARCH_FORM_UNAVAILABLE", "SEARCH_FORM_UNSAFE", "SEARCH_SUBMIT_FAILED"]) {
+    const fake = searchStreakFake({ submitError });
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80 });
+
+    await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), new RegExp(submitError));
+
+    assert.equal(fake.submissions.length, 1);
+    assert.deepEqual(fake.removed, [1]);
+    assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+  }
+});
+
+test("times out when a submitted search never navigates without submitting again", async () => {
+  const fake = searchStreakFake({ navigate: false });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 20 });
+
+  await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /TAB_LOAD_TIMEOUT/);
+
+  assert.equal(fake.submissions.length, 1);
+  assert.equal(fake.verificationReads(), 0);
+  assert.deepEqual(fake.removed, [1]);
+  assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+});
+
+test("does not activate or search when the refreshed streak card is already complete", async () => {
+  const fake = searchStreakFake({ before: [{ ...searchStreakEntry, text: "必应搜索连续打卡 搜索: 1/1" }] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+  const result = await driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" });
+
+  assert.equal(result.reason, "SEARCH_STREAK_COMPLETED");
+  assert.deepEqual(fake.submissions, []);
+  assert.deepEqual(fake.linkActivations, []);
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("does not activate a search streak that became disabled after catalog loading", async () => {
+  const fake = searchStreakFake({ before: [{ ...searchStreakEntry, disabled: true }] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 1 });
+
+  await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /SEARCH_STREAK_UNAVAILABLE/);
+
+  assert.deepEqual(fake.linkActivations, []);
+  assert.deepEqual(fake.submissions, []);
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("does not search or confirm contradictory completed signals with a fresh 0/1 counter", async () => {
+  const fake = searchStreakFake({ before: [{ ...searchStreakEntry, signals: { completed: true } }] });
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, catalogAttempts: 1 });
+
+  await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /SEARCH_STREAK_NOT_CONFIRMED/);
+
+  assert.deepEqual(fake.linkActivations, []);
+  assert.deepEqual(fake.submissions, []);
+  assert.deepEqual(fake.removed, [1]);
+});
+
+test("only verifies Rewards after loading results for the submitted query", async () => {
+  for (const url of [
+    "https://www.bing.com/", "https://www.bing.com/account", "https://www.bing.com/search",
+    "https://www.bing.com/search?q=unrelated", "https://www.bing.com/search?q=user-private-query&q=other",
+  ]) {
+    const fake = searchStreakFake({ after: [{ ...searchStreakEntry, text: "搜索: 1/1" }] });
+    const execute = fake.api.scripting.executeScript;
+    fake.api.scripting.executeScript = async options => {
+      const result = await execute(options);
+      if (options.func?.name === "submitBingSearch") fake.seedTab({ id: options.target.tabId, url });
+      return result;
+    };
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80 });
+
+    await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /SEARCH_SUBMIT_NOT_CONFIRMED/, url);
+
+    assert.equal(fake.submissions.length, 1);
+    assert.equal(fake.verificationReads(), 0);
+    assert.deepEqual(fake.removed, [1]);
+  }
+});
+
+test("matches a decoded results query to the trimmed configured query", async () => {
+  const fake = searchStreakFake({ after: [{ ...searchStreakEntry, text: "搜索: 1/1" }] });
+  const execute = fake.api.scripting.executeScript;
+  fake.api.scripting.executeScript = async options => {
+    const result = await execute(options);
+    if (options.func?.name === "submitBingSearch") {
+      fake.seedTab({ id: options.target.tabId, url: "https://www.bing.com/search?q=%E4%B8%8A%E6%B5%B7+%E5%A4%A9%E6%B0%94" });
+    }
+    return result;
+  };
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80 });
+
+  const result = await driver.executeLink(searchStreakEntry, { searchQuery: "  上海 天气  " });
+
+  assert.equal(result.reason, "SEARCH_STREAK_COMPLETED");
+  assert.equal(fake.submissions.length, 1);
+});
+
+test("verifies a search streak using the collector and arguments for its source page", async () => {
+  for (const [source, collector, args] of [
+    ["dashboard", "collectDashboardEntries", []],
+    ["quest", "collectQuestEntries", ["搜索活动"]],
+  ]) {
+    const entry = {
+      ...searchStreakEntry, source, parentTitle: source === "quest" ? "搜索活动" : undefined,
+      sourceUrl: source === "quest" ? "https://rewards.bing.com/earn/quest/search" : "https://rewards.bing.com/dashboard",
+    };
+    const fake = searchStreakFake({ before: [entry] });
+    const execute = fake.api.scripting.executeScript;
+    const collectors = [];
+    fake.api.scripting.executeScript = async options => {
+      if (options.func?.name?.startsWith("collect")) {
+        collectors.push({ name: options.func.name, args: options.args });
+        const entries = options.func.name === collector
+          ? [{ ...entry, text: fake.submissions.length ? "搜索: 1/1" : "搜索: 0/1" }] : [];
+        return [{ result: { entries, missingSections: [] } }];
+      }
+      return execute(options);
+    };
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80, catalogAttempts: 1 });
+
+    const result = await driver.executeLink(entry, { searchQuery: "user-private-query" });
+
+    assert.equal(result.reason, "SEARCH_STREAK_COMPLETED");
+    assert.deepEqual(collectors, [{ name: collector, args }, { name: collector, args }]);
+    assert.equal(fake.submissions.length, 1);
+  }
+});
+
+test("rejects a missing configured search query before creating or activating a tab", async () => {
+  for (const searchQuery of [undefined, "", "   "]) {
+    const fake = searchStreakFake();
+    const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {} });
+
+    await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery }), /SEARCH_QUERY_REQUIRED/);
+
+    assert.deepEqual(fake.submissions, []);
+    assert.deepEqual(fake.linkActivations, []);
+    assert.deepEqual(fake.removed, []);
+  }
+});
+
+test("loads fresh Rewards data in the result tab when a streak card opens a background tab", async () => {
+  const fake = searchStreakFake({ after: [{ ...searchStreakEntry, text: "必应搜索连续打卡 搜索: 1/1" }] });
+  const execute = fake.api.scripting.executeScript;
+  const verificationTabs = [];
+  fake.api.scripting.executeScript = async options => {
+    if (options.func?.name === "activateRewardsLink") {
+      const opened = { id: 7, openerTabId: options.target.tabId, url: searchStreakEntry.url, status: "complete" };
+      fake.seedTab(opened);
+      for (const listener of [...fake.listeners.onCreated]) listener(opened);
+      fake.linkActivations.push({ tabId: options.target.tabId, entryId: options.args[0] });
+      return [{ result: { activated: true, url: searchStreakEntry.url } }];
+    }
+    if (options.func?.name === "collectRewardsEntries" && fake.submissions.length > 0) {
+      verificationTabs.push(options.target.tabId);
+    }
+    return execute(options);
+  };
+  const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80 });
+
+  const result = await driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" });
+
+  assert.equal(result.reason, "SEARCH_STREAK_COMPLETED");
+  assert.deepEqual(fake.submissions, [{ tabId: 7, query: "user-private-query" }]);
+  assert.deepEqual(fake.updates, [{ tabId: 7, options: { url: searchStreakEntry.sourceUrl, active: false } }]);
+  assert.deepEqual(verificationTabs, [7]);
+  assert.deepEqual(fake.removed, [7, 1]);
+  assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+});
+
+test("rejects login or external redirects before submitting and after search navigation", async () => {
+  for (const url of ["https://login.live.com/login.srf", "https://example.com/redirect"]) {
+    for (const phase of ["activateRewardsLink", "submitBingSearch"]) {
+      const fake = searchStreakFake();
+      const execute = fake.api.scripting.executeScript;
+      fake.api.scripting.executeScript = async options => {
+        const result = await execute(options);
+        if (options.func?.name === phase) fake.seedTab({ id: options.target.tabId, url });
+        return result;
+      };
+      const driver = createChromeDriver({ chromeApi: fake.api, delay: async () => {}, timeoutMs: 80 });
+
+      await assert.rejects(driver.executeLink(searchStreakEntry, { searchQuery: "user-private-query" }), /SCRIPTING_PAGE_UNSUPPORTED/);
+
+      assert.equal(fake.submissions.length, phase === "submitBingSearch" ? 1 : 0);
+      assert.deepEqual(fake.removed, [1]);
+      assert.ok(Object.values(fake.listeners).every(active => active.size === 0));
+    }
+  }
+});
+
 test("loads a stable catalog and closes the source tab", async () => {
   const catalog = {
     missingSections: [],

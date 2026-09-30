@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.4.2
-// @description  自动完成 Bing Rewards 单步任务、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
+// @version      0.4.3
+// @description  自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
 // @match        https://rewards.bing.com/*
@@ -12,6 +12,9 @@
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_getTab
+// @grant        GM_saveTab
+// @grant        GM_getTabs
 // @grant        GM_registerMenuCommand
 // @grant        unsafeWindow
 // @updateURL    https://raw.githubusercontent.com/yzbf-lin/bing-rewards-auto-claim/main/userscript/bing-rewards-auto-claim.user.js
@@ -22,16 +25,22 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.4.2";
+  const VERSION = "0.4.3";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
+  const SEARCH_QUERY_KEY = "bingRewardsAutoClaimSearchQuery";
   const PANEL_ID = "bing-rewards-userscript-panel";
   const RUNNER_KEY = "__bingRewardsUserscriptRunner";
   const REWARDS_URL = "https://rewards.bing.com/earn";
   const DASHBOARD_URL = "https://rewards.bing.com/dashboard";
   const MAX_TASK_RECORDS = 200;
   const SETTLE_DELAY_MS = 1_800;
+  const TAB_ID_KEY = "bingRewardsAutoClaimTabId";
+  const DOCUMENT_ID = uniqueId();
+  let ownerTabId = null;
+  let tabIdentityPromise = null;
+  let tabIdentityError = null;
 
   const COMPLEX_TASK_PATTERNS = [
     /每日搜索|daily\s+search|(?:完成|进行|需要|只需)\s*\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)|\d+\s*(?:次|个)?\s*(?:搜索|search(?:es)?)/i,
@@ -52,6 +61,21 @@
   const SUPPORTED_KINDS = new Set(["link", "button"]);
   const TRACKING_PARAMETERS = new Set(["form", "ocid", "publ", "crea", "filters"]);
   const REASON_LABELS = {
+    SEARCH_STREAK: "单次搜索打卡",
+    SEARCH_STREAK_ALREADY_ATTEMPTED: "本轮已尝试搜索打卡，不重复提交",
+    SEARCH_STREAK_UNAVAILABLE: "搜索打卡当前不可用，未提交搜索",
+    SEARCH_STREAK_COMPLETED: "今日搜索已确认 1/1",
+    SEARCH_QUERY_REQUIRED: "请在设置中保存打卡搜索词",
+    SEARCH_QUERY_INVALID: "搜索词需为不超过 200 字的单行文本",
+    SEARCH_FORM_UNAVAILABLE: "未找到可用的 Bing 搜索框",
+    SEARCH_PAGE_UNSUPPORTED: "未进入受支持的 Bing 搜索页面",
+    SEARCH_FORM_UNSAFE: "搜索表单地址不受支持，未提交",
+    SEARCH_FORM_INVALID: "搜索表单校验未通过",
+    SEARCH_SUBMIT_CANCELLED: "搜索提交被页面取消",
+    SEARCH_SUBMIT_FAILED: "搜索提交失败",
+    SEARCH_SUBMIT_NOT_CONFIRMED: "未确认搜索结果页加载，已停止本次搜索",
+    SEARCH_STREAK_NOT_CONFIRMED: "搜索已尝试，尚未确认今日打卡 1/1",
+    SEARCH_STREAK_DATE_CHANGED: "日期已变化，请重新运行以核对今日任务",
     ACTION_TRIGGERED: "已触发领取动作",
     IMAGE_PUZZLE: "可自动完成的滑块拼图",
     PUZZLE_COMPLETED: "拼图已完成并确认",
@@ -102,7 +126,77 @@
     return readValue(STATE_KEY, null);
   }
 
+  function uniqueId() {
+    return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function initializeTabIdentity() {
+    if (!tabIdentityPromise) {
+      tabIdentityPromise = new Promise((resolve, reject) => {
+        if (typeof GM_getTab !== "function" || typeof GM_saveTab !== "function") {
+          reject(new Error("TAB_IDENTITY_UNAVAILABLE"));
+          return;
+        }
+        try {
+          GM_getTab((tab) => {
+            try {
+              if (!tab || typeof tab !== "object") throw new Error("TAB_IDENTITY_UNAVAILABLE");
+              if (!tab[TAB_ID_KEY]) {
+                tab[TAB_ID_KEY] = uniqueId();
+                GM_saveTab(tab);
+              }
+              ownerTabId = tab[TAB_ID_KEY];
+              resolve(ownerTabId);
+            } catch {
+              reject(new Error("TAB_IDENTITY_UNAVAILABLE"));
+            }
+          });
+        } catch {
+          reject(new Error("TAB_IDENTITY_UNAVAILABLE"));
+        }
+      }).catch((error) => {
+        tabIdentityError = "当前脚本管理器不支持标签页身份，无法安全运行；请使用最新版 Tampermonkey";
+        throw error;
+      });
+    }
+    return tabIdentityPromise;
+  }
+
+  function ownsRun(state) {
+    return Boolean(ownerTabId && state?.ownerTabId === ownerTabId);
+  }
+
+  async function canRestartRun(state) {
+    if (!state?.ownerTabId) return true;
+    if (typeof GM_getTabs !== "function") {
+      tabIdentityError = "无法确认原标签页是否关闭；请使用最新版 Tampermonkey";
+      return false;
+    }
+    try {
+      const tabs = await new Promise((resolve) => GM_getTabs(resolve));
+      if (!tabs || typeof tabs !== "object") return false;
+      return !Object.values(tabs).some((tab) => tab?.[TAB_ID_KEY] === state.ownerTabId);
+    } catch {
+      return false;
+    }
+  }
+
+  function refreshOwnedState(state) {
+    if (!ownsRun(state)) return false;
+    const latest = getState();
+    if (latest && latest.runId !== state.runId) return false;
+    if (latest && (latest.revision ?? 0) > (state.revision ?? 0)) Object.assign(state, latest);
+    return state.status === "running";
+  }
+
   function setState(state) {
+    if (!ownsRun(state)) return state;
+    const latest = getState();
+    if (latest?.runId === state.runId && (latest.revision ?? 0) > (state.revision ?? 0)) {
+      Object.assign(state, latest);
+      return state;
+    }
+    state.revision = (state.revision ?? 0) + 1;
     writeValue(STATE_KEY, state);
     renderPanel(state);
     return state;
@@ -156,6 +250,121 @@
     }
   }
 
+  function getSearchStreakProgress(entry) {
+    if (!entry || entry.kind !== "link") return null;
+    try {
+      const url = new URL(entry.url);
+      if (url.protocol !== "https:" || url.username || url.password || url.port ||
+          !(url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return null;
+    } catch {
+      return null;
+    }
+
+    const title = String(entry.title ?? "").replace(/\s+/g, " ").trim();
+    if (!/^(?:(?:必[应應]|bing)\s*(?:搜索|搜尋)\s*(?:连续|連續)\s*(?:打卡|签到|簽到)|bing\s+search\s+streak)$/i.test(title)) {
+      return null;
+    }
+
+    const matches = [...String(entry.text ?? "").matchAll(/(?:搜索|搜尋|\bsearch(?:es)?)\s*[:：]?\s*(\d+)\s*\/\s*(\d+)(?![\d.])/gi)];
+    if (matches.length !== 1) return null;
+    const current = Number(matches[0][1]);
+    const total = Number(matches[0][2]);
+    return Number.isSafeInteger(current) && total === 1 ? { current, total } : null;
+  }
+
+  function searchQuerySetting(value = readValue(SEARCH_QUERY_KEY, "")) {
+    const raw = value ?? "";
+    const query = typeof raw === "string" ? raw.trim() : "";
+    const error = typeof raw !== "string" || query.length > 200 || /[\u0000-\u001f\u007f]/.test(raw)
+      ? "SEARCH_QUERY_INVALID" : !query ? "SEARCH_QUERY_REQUIRED" : null;
+    return { query, error };
+  }
+
+  async function submitBingSearch(query) {
+    if (query == null || (typeof query === "string" && !query.trim())) {
+      throw new Error("SEARCH_QUERY_REQUIRED");
+    }
+    if (typeof query !== "string" || query.trim().length > 200 || /[\u0000-\u001f\u007f]/.test(query.trim())) {
+      throw new Error("SEARCH_QUERY_INVALID");
+    }
+    const queryText = query.trim();
+    const pageUrl = () => {
+      try {
+        const url = new URL(location.href);
+        if (url.protocol === "https:" && !url.username && !url.password && !url.port &&
+            (url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) return url;
+      } catch {
+        // Report the same stable code for an absent or malformed page URL.
+      }
+      throw new Error("SEARCH_PAGE_UNSUPPORTED");
+    };
+    pageUrl();
+    const view = document.defaultView || globalThis;
+    const Form = view.HTMLFormElement;
+    const Input = view.HTMLInputElement;
+    const Textarea = view.HTMLTextAreaElement;
+    const EventType = view.Event;
+    const usable = (field) => {
+      if (!((Input && field instanceof Input) || (Textarea && field instanceof Textarea)) ||
+          !Form || !(field.form instanceof Form) || field.name !== "q" ||
+          field.disabled || field.readOnly || field.hidden || field.matches(":disabled") ||
+          field.hasAttribute("disabled") || field.getAttribute("aria-disabled") === "true" ||
+          field.closest('[hidden], [aria-hidden="true"]') || field.getClientRects().length === 0) return false;
+      const style = view.getComputedStyle(field);
+      return style.display !== "none" && !["hidden", "collapse"].includes(style.visibility) && style.opacity !== "0";
+    };
+    const validateForm = (form) => {
+      const currentUrl = pageUrl();
+      try {
+        const action = new URL(form.action, currentUrl.href);
+        if (action.origin === currentUrl.origin && !action.username && !action.password &&
+            /^\/search\/?$/i.test(action.pathname) && String(form.method).toLowerCase() === "get") return;
+      } catch {
+        // A malformed action must not receive the query either.
+      }
+      throw new Error("SEARCH_FORM_UNSAFE");
+    };
+
+    let field = null;
+    for (let attempt = 0; attempt <= 100; attempt += 1) {
+      pageUrl();
+      field = Array.from(document.querySelectorAll('#sb_form_q, input[name="q"], textarea[name="q"]')).find(usable);
+      if (field) break;
+      if (attempt < 100) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!field) throw new Error("SEARCH_FORM_UNAVAILABLE");
+    const form = field.form;
+    validateForm(form);
+    const prototype = field instanceof Input ? Input.prototype : Textarea.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (!setter) throw new Error("SEARCH_FORM_UNAVAILABLE");
+
+    try {
+      setter.call(field, queryText);
+      field.dispatchEvent(new EventType("input", { bubbles: true }));
+      field.dispatchEvent(new EventType("change", { bubbles: true }));
+      validateForm(form);
+      if (!usable(field) || field.form !== form) throw new Error("SEARCH_FORM_UNAVAILABLE");
+      if (!form.checkValidity()) throw new Error("SEARCH_FORM_INVALID");
+      form.setAttribute("target", "_self");
+      if (typeof Form.prototype.requestSubmit === "function") {
+        Form.prototype.requestSubmit.call(form);
+      } else {
+        const event = new EventType("submit", { bubbles: true, cancelable: true });
+        if (!form.dispatchEvent(event)) throw new Error("SEARCH_SUBMIT_CANCELLED");
+        validateForm(form);
+        Form.prototype.submit.call(form);
+      }
+    } catch (error) {
+      if (/^SEARCH_(?:PAGE_UNSUPPORTED|FORM_UNSAFE|FORM_UNAVAILABLE|FORM_INVALID|SUBMIT_CANCELLED)$/.test(error?.message)) {
+        throw error;
+      }
+      throw new Error("SEARCH_SUBMIT_FAILED");
+    }
+    // This reports a submission attempt; Rewards progress is verified by the caller.
+    return { submitted: true };
+  }
+
   function analyzeEntryFeatures(entry) {
     const title = normalize(entry.title);
     const text = normalize(entry.text);
@@ -172,7 +381,8 @@
     const navigationOnly = entry.kind === "link";
     const trustedDestination = navigationOnly && isTrustedDestination(url);
     const imagePuzzle = trustedDestination && /^\/spotlight\/imagepuzzle\/?$/i.test(new URL(url).pathname);
-    const completed = signals.completed ?? inferCompleted(searchable);
+    const searchStreakProgress = getSearchStreakProgress(entry);
+    const completed = (searchStreakProgress?.current >= 1) || (signals.completed ?? inferCompleted(searchable));
     const hasProgress = signals.hasProgress ?? PROGRESS_PATTERN.test(searchable);
     const clickOnlyCue = signals.clickOnlyCue ?? (
       CLICK_ONLY_PATTERN.test(searchable) || /[?&]rnoreward=1(?:&|$)/i.test(url)
@@ -208,6 +418,7 @@
       hasProgress,
       hasRewardSignal,
       imagePuzzle,
+      searchStreakProgress,
       puzzleTask,
       interactiveQuiz,
       complex,
@@ -232,6 +443,9 @@
     }
     if (features.imagePuzzle && features.hasRewardSignal) {
       return { decision: "ELIGIBLE", reason: "IMAGE_PUZZLE", rewardPoints };
+    }
+    if (features.searchStreakProgress?.current === 0) {
+      return { decision: "ELIGIBLE", reason: "SEARCH_STREAK", rewardPoints };
     }
     if (features.interactiveQuiz && !features.dailyActivityLink) {
       return { decision: "SKIPPED", reason: "INTERACTIVE_QUIZ", rewardPoints };
@@ -905,8 +1119,15 @@
   }
 
   async function finishPendingAction(state, outcome = "COMPLETED", reason = "ACTION_TRIGGERED") {
+    if (!refreshOwnedState(state)) return;
     const pending = state.pending;
     if (!pending?.entry) throw new Error("PENDING_ACTION_MISSING");
+    if (outcome === "COMPLETED" && pending.recognition.reason === "SEARCH_STREAK" && reason !== "SEARCH_STREAK_COMPLETED") {
+      state.phase = pending.searchSubmitted ? "search-streak-wait" : "search-streak-submit";
+      setCurrentStep(state, "正在提交今日打卡搜索", pending.entry.section);
+      await submitPendingSearch(state);
+      return;
+    }
     if (outcome === "COMPLETED" && pending.recognition.reason === "IMAGE_PUZZLE" && reason !== "PUZZLE_COMPLETED") {
       state.phase = "solve-puzzle";
       setCurrentStep(state, "正在完成拼图", pending.entry.section);
@@ -919,7 +1140,7 @@
       await verifyPendingClaim(state);
       return;
     }
-    if (outcome === "COMPLETED" && pending.entry.source === "quest") {
+    if (outcome === "COMPLETED" && pending.entry.source === "quest" && pending.recognition.reason !== "SEARCH_STREAK") {
       state.phase = "rescan-quest";
       state.questRescan = {
         sourceUrl: pending.entry.sourceUrl,
@@ -969,6 +1190,87 @@
     setState(state);
     await delay(SETTLE_DELAY_MS);
     await finishPendingAction(state, "COMPLETED", "PUZZLE_COMPLETED");
+  }
+
+  function searchStreakDateChanged(state) {
+    return beijingDateKey(new Date(state.startedAt)) !== beijingDateKey();
+  }
+
+  async function submitPendingSearch(state) {
+    if (!refreshOwnedState(state) || !state.pending ||
+        !["search-streak-submit", "search-streak-wait"].includes(state.phase)) return;
+    if (searchStreakDateChanged(state)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_DATE_CHANGED");
+      return;
+    }
+    if (!state.pending.searchSubmitted) {
+      // Save before the native form can unload this document. A restored run only verifies.
+      state.pending.searchSubmitted = true;
+      state.pending.searchDocumentId = DOCUMENT_ID;
+      state.phase = "search-streak-wait";
+      setState(state);
+      try {
+        await submitBingSearch(state.pending.searchQuery);
+      } catch (error) {
+        await finishPendingAction(state, "FAILED", error.message || "SEARCH_SUBMIT_FAILED");
+        return;
+      }
+    }
+    await waitForPendingSearch(state);
+  }
+
+  async function waitForPendingSearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "search-streak-wait") return;
+    if (searchStreakDateChanged(state)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_DATE_CHANGED");
+      return;
+    }
+    const target = state.pending.entry.sourceUrl || REWARDS_URL;
+    // Back/refresh on Rewards must never lead to a second submission.
+    if (!isCurrentUrl(target)) {
+      let loaded = false;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const url = new URL(location.href);
+        if (state.pending.searchDocumentId !== DOCUMENT_ID &&
+            isTrustedDestination(url.href) && /^\/search\/?$/i.test(url.pathname) &&
+            url.searchParams.get("q") === state.pending.searchQuery && document.readyState === "complete") {
+          loaded = true;
+          break;
+        }
+        await delay(500);
+      }
+      if (!loaded) {
+        await finishPendingAction(state, "FAILED", "SEARCH_SUBMIT_NOT_CONFIRMED");
+        return;
+      }
+      await delay(SETTLE_DELAY_MS);
+    }
+    state.phase = "search-streak-verify";
+    setCurrentStep(state, "正在核对今日搜索进度", state.pending.entry.section);
+    await verifyPendingSearch(state);
+  }
+
+  async function verifyPendingSearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "search-streak-verify") return;
+    if (searchStreakDateChanged(state)) {
+      await finishPendingAction(state, "FAILED", "SEARCH_STREAK_DATE_CHANGED");
+      return;
+    }
+    const { entry } = state.pending;
+    if (navigateCurrentTab(entry.sourceUrl || REWARDS_URL)) return;
+    const collector = entry.source === "dashboard" ? collectDashboardEntries
+      : entry.source === "quest" ? () => collectQuestEntries(entry.parentTitle) : collectRewardsEntries;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const matches = collector().entries.filter((candidate) =>
+        candidate.section === entry.section && candidate.title === entry.title);
+      if (matches.length === 1 && getSearchStreakProgress(matches[0])?.current >= 1) {
+        appendLog(state, "SEARCH_STREAK_COMPLETED", { current: 1, total: 1 });
+        await finishPendingAction(state, "COMPLETED", "SEARCH_STREAK_COMPLETED");
+        return;
+      }
+      if (attempt < 29) await delay(500);
+    }
+    await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NOT_CONFIRMED");
   }
 
   async function verifyPendingClaim(state) {
@@ -1054,6 +1356,22 @@
       return;
     }
 
+    if (state.pending.recognition.reason === "SEARCH_STREAK") {
+      const progress = getSearchStreakProgress(matches[0]);
+      if (matches[0].disabled) {
+        await finishPendingAction(state, "FAILED", "SEARCH_STREAK_UNAVAILABLE");
+        return;
+      }
+      if (progress?.current >= 1) {
+        await finishPendingAction(state, "COMPLETED", "SEARCH_STREAK_COMPLETED");
+        return;
+      }
+      if (!progress || matches[0].signals?.completed === true) {
+        await finishPendingAction(state, "FAILED", "SEARCH_STREAK_NOT_CONFIRMED");
+        return;
+      }
+    }
+
     state.phase = "execute-link-wait";
     appendLog(state, "CARD_CLICK", {
       kind: "link",
@@ -1083,17 +1401,25 @@
   }
 
   async function executeCatalog(state) {
+    if (!refreshOwnedState(state)) return;
     while (state.index < state.catalog.length) {
       const entry = state.catalog[state.index];
       setCurrentStep(state, entry.title || "未命名入口", entry.section || "积分任务");
       const recognition = classifyEntry(entry);
       const previous = readValue(MEMORY_KEY, {})[taskMemoryKey(entry)];
       const dateKey = beijingDateKey(new Date(state.startedAt));
-      const decision = state.trigger !== "manual" && recognition.decision === "ELIGIBLE" &&
+      let decision = state.trigger !== "manual" && recognition.decision === "ELIGIBLE" &&
         entry.action !== "claim-points" &&
         previous?.lastCompletedDate === dateKey
         ? { ...recognition, decision: "SKIPPED", reason: "ALREADY_TRIGGERED_TODAY" }
         : recognition;
+      const searchSettings = recognition.reason === "SEARCH_STREAK" ? searchQuerySetting() : null;
+      if (decision.decision === "ELIGIBLE" && searchSettings?.error) {
+        decision = { ...recognition, decision: "SKIPPED", reason: searchSettings.error };
+      }
+      if (decision.decision === "ELIGIBLE" && searchSettings && state.searchStreakAttempted) {
+        decision = { ...recognition, decision: "SKIPPED", reason: "SEARCH_STREAK_ALREADY_ATTEMPTED" };
+      }
 
       if (decision.decision === "SKIPPED") {
         storeTaskResult(state, entry, recognition, "SKIPPED", decision.reason, Date.now());
@@ -1104,6 +1430,10 @@
       }
 
       state.pending = { entry, recognition, startedAt: Date.now() };
+      if (searchSettings) {
+        state.pending.searchQuery = searchSettings.query;
+        state.searchStreakAttempted = true;
+      }
       appendLog(state, "ENTRY_ACTIVATING", {
         title: entry.title,
         section: entry.section,
@@ -1176,8 +1506,9 @@
   }
 
   async function resumeRun() {
+    await initializeTabIdentity();
     const state = getState();
-    if (!state || state.status !== "running" || globalThis[RUNNER_KEY]) return;
+    if (!ownsRun(state) || state.status !== "running" || globalThis[RUNNER_KEY]) return;
     globalThis[RUNNER_KEY] = true;
     try {
       mountPanel();
@@ -1206,6 +1537,20 @@
   }
 
   async function resumePhase(state) {
+    await initializeTabIdentity();
+    if (!refreshOwnedState(state)) return;
+    if (state.phase === "search-streak-submit") {
+      await submitPendingSearch(state);
+      return;
+    }
+    if (state.phase === "search-streak-wait") {
+      await waitForPendingSearch(state);
+      return;
+    }
+    if (state.phase === "search-streak-verify") {
+      await verifyPendingSearch(state);
+      return;
+    }
     if (state.phase === "puzzle-completed") {
       await finishPendingAction(state, "COMPLETED", "PUZZLE_COMPLETED");
       return;
@@ -1343,10 +1688,13 @@
   }
 
   function createRun(trigger) {
+    if (!ownerTabId) throw new Error("TAB_IDENTITY_UNAVAILABLE");
     const startedAt = new Date();
     return {
       version: VERSION,
-      runId: `userscript-${startedAt.getTime()}`,
+      runId: `userscript-${uniqueId()}`,
+      ownerTabId,
+      revision: 0,
       trigger,
       status: "running",
       startedAt: startedAt.toISOString(),
@@ -1375,13 +1723,29 @@
     };
   }
 
-  function startRun(trigger = "manual") {
+  async function startRun(trigger = "manual") {
+    try {
+      await initializeTabIdentity();
+    } catch {
+      mountPanel();
+      renderPanel();
+      return;
+    }
     const current = getState();
     if (current?.status === "running") {
       mountPanel();
       renderPanel(current);
-      void resumeRun();
-      return;
+      if (ownsRun(current)) {
+        void resumeRun();
+        return;
+      }
+      if (trigger !== "manual" || !await canRestartRun(current)) {
+        renderPanel(current);
+        return;
+      }
+      // A different document may have advanced the run while tab data loaded.
+      const latest = getState();
+      if (latest?.runId !== current.runId || latest?.revision !== current.revision) return;
     }
     const state = createRun(trigger);
     mountPanel();
@@ -1648,12 +2012,43 @@
       <div class="brac-body">
         <header><div><small>BING REWARDS v${VERSION}</small><h1>简单积分领取</h1></div><span data-role="status">尚未运行</span></header>
         <div class="brac-schedule"><span>每日首次访问自动执行</span><strong>北京时间 09:00 后</strong></div>
+        <details class="brac-settings"><summary>搜索打卡设置</summary>
+          <form data-role="search-settings-form">
+            <label for="brac-search-query">打卡搜索词</label>
+            <input id="brac-search-query" data-role="search-query" type="text" maxlength="200" autocomplete="off" placeholder="填写要查询的内容">
+            <small>每天使用保存的搜索词完成一次打卡；留空则跳过。</small>
+            <button type="submit">保存搜索词</button>
+            <p data-role="search-settings-feedback" role="status" aria-live="polite"></p>
+          </form>
+        </details>
         <button class="brac-run" data-role="run" type="button">立即领取</button>
         <section class="brac-progress" data-role="progress" hidden><small data-role="progress-meta"></small><strong data-role="progress-title"></strong></section>
         <section class="brac-summary"><div><small>最近结果</small><strong data-role="summary">完成 0 · 跳过 0 · 失败 0</strong><small data-role="memory">已识别 0 个任务入口</small></div><time data-role="finished"></time></section>
         <div class="brac-results" data-role="results"></div>
         <details class="brac-logs"><summary>运行日志</summary><pre data-role="logs">暂无日志</pre></details>
       </div>`;
+  }
+
+  function bindSearchSettings(root) {
+    const input = root.querySelector('[data-role="search-query"]');
+    const form = root.querySelector('[data-role="search-settings-form"]');
+    const feedback = root.querySelector('[data-role="search-settings-feedback"]');
+    input.value = searchQuerySetting().query;
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const { query, error } = searchQuerySetting(input.value);
+      if (error === "SEARCH_QUERY_INVALID") {
+        feedback.textContent = REASON_LABELS[error];
+        return;
+      }
+      try {
+        writeValue(SEARCH_QUERY_KEY, query);
+        input.value = query;
+        feedback.textContent = query ? "已保存到本机，后续任务使用此搜索词。" : "已清空，将跳过搜索打卡。";
+      } catch {
+        feedback.textContent = "保存失败，请重试。";
+      }
+    });
   }
 
   function mountPanel() {
@@ -1670,9 +2065,11 @@
       .brac-schedule,.brac-summary{margin-top:16px;border:1px solid #e4e7ec;border-radius:12px;padding:13px;background:#fff;font-size:12px}.brac-run{width:100%;min-height:44px;margin-top:14px;border:0;border-radius:10px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}.brac-run:disabled{opacity:.55;cursor:wait}
       .brac-progress{margin-top:12px;border:1px solid #84adff;border-radius:12px;padding:12px 14px;background:#eff8ff}.brac-progress[hidden]{display:none}.brac-progress strong{display:block;margin-top:4px;color:#1849a9;font-size:14px}.brac-summary strong{display:block;margin:3px 0;font-size:13px}.brac-summary time{color:#667085;font-size:11px}.brac-results{display:grid;gap:8px;margin-top:14px}.brac-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-left:3px solid #98a2b3;padding:8px 9px;background:#fff;font-size:11px}.brac-item[data-outcome="COMPLETED"]{border-left-color:#079455}.brac-item[data-outcome="FAILED"]{border-left-color:#d92d20}.brac-item strong{display:block;font-size:12px}.brac-item small{margin-top:3px}.brac-outcome{flex:none;color:#475467}
       .brac-logs{margin-top:14px;border:1px solid #e4e7ec;border-radius:10px;padding:10px;background:#fff;font-size:12px}.brac-logs summary{cursor:pointer;font-weight:700}.brac-logs pre{overflow:auto;max-height:220px;margin:10px 0 0;white-space:pre-wrap;color:#475467;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+      .brac-settings{margin-top:12px;border:1px solid #e4e7ec;border-radius:10px;padding:12px;background:#fff;font-size:12px}.brac-settings summary{cursor:pointer;font-weight:700}.brac-settings form{display:grid;gap:9px;margin-top:12px}.brac-settings label{font-weight:650}.brac-settings input{box-sizing:border-box;width:100%;min-width:0;min-height:36px;border:1px solid #d0d5dd;border-radius:7px;padding:8px;font:inherit;color:#162033;background:#fff}.brac-settings button{justify-self:start;border:0;border-radius:7px;padding:8px 12px;background:#175cd3;color:#fff;font:inherit;cursor:pointer}.brac-settings p{margin:0;color:#475467;line-height:1.5}.brac-settings :is(input,button,summary):focus-visible{outline:3px solid #84adff;outline-offset:2px}
     `;
     widget.root.append(style);
     widget.content.innerHTML = panelMarkup();
+    bindSearchSettings(widget.root);
     widget.root.querySelector('[data-role="run"]').addEventListener("click", () => startRun("manual"));
   }
 
@@ -1687,10 +2084,12 @@
     const status = root.querySelector('[data-role="status"]');
     const runButton = root.querySelector('[data-role="run"]');
     const progress = root.querySelector('[data-role="progress"]');
-    status.textContent = running ? "执行中" : state?.status === "completed" ? "执行完成" :
-      state?.status === "aborted" ? "异常结束" : "尚未运行";
-    runButton.disabled = running;
-    runButton.textContent = running ? "正在领取…" : "立即领取";
+    status.textContent = tabIdentityError || (running && !ownsRun(state)
+      ? state.ownerTabId ? "任务由另一个标签页执行" : "旧版本任务需手动重新开始"
+      : running ? "执行中" : state?.status === "completed" ? "执行完成" :
+      state?.status === "aborted" ? "异常结束" : "尚未运行");
+    runButton.disabled = Boolean(tabIdentityError || (running && ownsRun(state)));
+    runButton.textContent = running && !ownsRun(state) ? "原标签页关闭后重新开始" : running ? "正在领取…" : "立即领取";
     progress.hidden = !running;
     root.querySelector('[data-role="progress-meta"]').textContent = running
       ? `${state.currentStep?.section || "积分任务"} · ${state.index || 0}/${state.catalog?.length || 0}`
@@ -1753,6 +2152,11 @@
   }
 
   const testApi = {
+    initializeTabIdentity,
+    canRestartRun,
+    bindSearchSettings,
+    getSearchStreakProgress,
+    submitBingSearch,
     createRewardsFloatingWidget,
     inferCompleted,
     analyzeEntryFeatures,
@@ -1776,10 +2180,15 @@
   }
 
   GM_registerMenuCommand("Bing Rewards：立即领取", () => startRun("manual"));
-  const initialState = getState();
-  if (location.hostname === "rewards.bing.com" || initialState?.status === "running") {
+  void initializeTabIdentity().then(() => {
+    const initialState = getState();
+    if (location.hostname === "rewards.bing.com" || initialState?.status === "running") {
+      mountPanel();
+      renderPanel(initialState);
+    }
+    scheduleAutomaticRun();
+  }).catch(() => {
     mountPanel();
-    renderPanel(initialState);
-  }
-  scheduleAutomaticRun();
+    renderPanel();
+  });
 })();
