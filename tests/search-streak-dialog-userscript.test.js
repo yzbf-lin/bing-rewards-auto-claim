@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 
 const source = readFileSync(new URL("../userscript/bing-rewards-auto-claim.user.js", import.meta.url), "utf8");
 const sourceUrl = "https://rewards.bing.com/earn";
 const landingUrl = "https://www.bing.com/?form=ML2PCO";
 const stateKey = "bingRewardsAutoClaimState";
-const queryKey = "bingRewardsAutoClaimSearchQuery";
 const candidate = {
   section: "连续打卡任务", title: "必应搜索连续打卡", text: "必应搜索连续打卡 搜索: 0/1",
   kind: "button", url: null, source: "earn", sourceUrl,
@@ -21,7 +21,7 @@ function runtime({
   const location = { href, assign(value) { this.href = value; } };
   let unloaded = false;
   let dialogOpened = false;
-  const counters = { cardClicks: 0, linkClicks: 0, dialogReads: 0, progressReads: 0, submissions: 0, writes: [] };
+  const counters = { cardClicks: 0, linkClicks: 0, dialogReads: 0, progressReads: 0, submissions: 0, writes: [], randomCalls: 0 };
   const names = ["连续打卡任务", "升级活动", "任务", "日常任务"];
   const cardAttrs = new Map();
   const linkAttrs = new Map([["target", "_blank"]]);
@@ -124,6 +124,7 @@ function runtime({
   };
   const context = vm.createContext({
     __BING_REWARDS_USERSCRIPT_TEST__: true, URL, document, location, window: { location, open() {} },
+    crypto: { getRandomValues(values) { counters.randomCalls++; return webcrypto.getRandomValues(values); } },
     GM_getValue(key, fallback) { return store.has(key) ? structuredClone(store.get(key)) : fallback; },
     GM_setValue(key, value) {
       store.set(key, structuredClone(value));
@@ -159,7 +160,7 @@ function pendingRun(rt, phase = "search-streak-open") {
 }
 
 test("button and delayed dialog navigation submit once and require the source card to reach 1/1", async () => {
-  const rt = runtime({ store: new Map([[queryKey, "  aurora forecast  "]]), dialogDelay: 3, unloadOnLinkNavigation: true });
+  const rt = runtime({ dialogDelay: 3, unloadOnLinkNavigation: true });
   await rt.ready;
   const state = rt.api.createRun("automatic");
   state.catalog = [candidate];
@@ -172,13 +173,16 @@ test("button and delayed dialog navigation submit once and require the source ca
   const persisted = rt.store.get(stateKey);
   assert.equal(persisted.phase, "search-streak-navigate");
   assert.equal(persisted.pending.searchLandingUrl, landingUrl);
-  assert.equal(persisted.pending.searchQuery, "aurora forecast");
+  const query = persisted.pending.searchQuery;
+  assert.match(query, /^[0-9a-f]{16}$/);
+  assert.equal(rt.counters.randomCalls, 1);
   assert.equal(persisted.results.length, 0);
 
   const search = runtime({ store: rt.store, tabData: rt.tabData, href: landingUrl, unloadOnSearchNavigation: true });
   await untilNavigation(() => search.api.resumePhase(search.store.get(stateKey)));
   assert.equal(search.counters.submissions, 1);
-  assert.equal(search.field.value, "aurora forecast");
+  assert.equal(search.field.value, query);
+  assert.equal(search.counters.randomCalls, 0);
   assert.equal(search.counters.cardClicks, 0);
   assert.equal(search.counters.linkClicks, 0);
   const submitted = search.store.get(stateKey);
@@ -190,6 +194,7 @@ test("button and delayed dialog navigation submit once and require the source ca
   await results.api.resumePhase(results.store.get(stateKey));
   assert.equal(results.location.href, sourceUrl);
   assert.equal(results.counters.submissions, 0);
+  assert.equal(results.counters.randomCalls, 0);
   assert.equal(results.store.get(stateKey).phase, "search-streak-verify");
   assert.equal(results.store.get(stateKey).results.length, 0);
 
@@ -202,7 +207,8 @@ test("button and delayed dialog navigation submit once and require the source ca
   assert.equal(verify.counters.submissions, 0);
   assert.equal(verify.counters.cardClicks, 0);
   assert.equal(verify.counters.linkClicks, 0);
-  assert.doesNotMatch(JSON.stringify(restored.logs), /aurora forecast/);
+  assert.equal(verify.counters.randomCalls, 0);
+  assert.equal(JSON.stringify(restored.logs).includes(query), false);
 });
 
 test("a missing dialog fails explicitly without searching or completing the button task", async () => {

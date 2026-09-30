@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.4.4
+// @version      0.4.5
 // @description  自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
@@ -25,11 +25,10 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.4.4";
+  const VERSION = "0.4.5";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
-  const SEARCH_QUERY_KEY = "bingRewardsAutoClaimSearchQuery";
   const PANEL_ID = "bing-rewards-userscript-panel";
   const RUNNER_KEY = "__bingRewardsUserscriptRunner";
   const REWARDS_URL = "https://rewards.bing.com/earn";
@@ -69,8 +68,9 @@
     SEARCH_STREAK_LINK_NOT_UNIQUE: "搜索打卡弹窗入口不唯一，已停止",
     SEARCH_STREAK_LINK_UNSAFE: "搜索打卡弹窗链接不受支持",
     SEARCH_STREAK_NAVIGATION_NOT_CONFIRMED: "未进入搜索打卡目标页，请重新运行",
-    SEARCH_QUERY_REQUIRED: "请在设置中保存打卡搜索词",
-    SEARCH_QUERY_INVALID: "搜索词需为不超过 200 字的单行文本",
+    SEARCH_QUERY_REQUIRED: "本轮搜索内容丢失，请重新运行",
+    SEARCH_QUERY_INVALID: "本轮搜索内容无效，请重新运行",
+    SEARCH_QUERY_GENERATION_FAILED: "无法生成随机搜索内容，请重新运行",
     SEARCH_FORM_UNAVAILABLE: "未找到可用的 Bing 搜索框",
     SEARCH_PAGE_UNSUPPORTED: "未进入受支持的 Bing 搜索页面",
     SEARCH_FORM_UNSAFE: "搜索表单地址不受支持，未提交",
@@ -283,12 +283,14 @@
     return Number.isSafeInteger(current) && total === 1 && current <= total ? { current, total } : null;
   }
 
-  function searchQuerySetting(value = readValue(SEARCH_QUERY_KEY, "")) {
-    const raw = value ?? "";
-    const query = typeof raw === "string" ? raw.trim() : "";
-    const error = typeof raw !== "string" || query.length > 200 || /[\u0000-\u001f\u007f]/.test(raw)
-      ? "SEARCH_QUERY_INVALID" : !query ? "SEARCH_QUERY_REQUIRED" : null;
-    return { query, error };
+  function createRandomSearchQuery() {
+    try {
+      const bytes = new Uint8Array(8);
+      globalThis.crypto.getRandomValues(bytes);
+      return Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+    } catch {
+      throw new Error("SEARCH_QUERY_GENERATION_FAILED");
+    }
   }
 
   async function submitBingSearch(query) {
@@ -1563,11 +1565,8 @@
         previous?.lastCompletedDate === dateKey
         ? { ...recognition, decision: "SKIPPED", reason: "ALREADY_TRIGGERED_TODAY" }
         : recognition;
-      const searchSettings = recognition.reason === "SEARCH_STREAK" ? searchQuerySetting() : null;
-      if (decision.decision === "ELIGIBLE" && searchSettings?.error) {
-        decision = { ...recognition, decision: "SKIPPED", reason: searchSettings.error };
-      }
-      if (decision.decision === "ELIGIBLE" && searchSettings && state.searchStreakAttempted) {
+      const searchStreak = recognition.reason === "SEARCH_STREAK";
+      if (decision.decision === "ELIGIBLE" && searchStreak && state.searchStreakAttempted) {
         decision = { ...recognition, decision: "SKIPPED", reason: "SEARCH_STREAK_ALREADY_ATTEMPTED" };
       }
 
@@ -1580,9 +1579,14 @@
       }
 
       state.pending = { entry, recognition, startedAt: Date.now() };
-      if (searchSettings) {
-        state.pending.searchQuery = searchSettings.query;
+      if (searchStreak) {
         state.searchStreakAttempted = true;
+        try {
+          state.pending.searchQuery = createRandomSearchQuery();
+        } catch {
+          await finishPendingAction(state, "FAILED", "SEARCH_QUERY_GENERATION_FAILED");
+          return;
+        }
       }
       appendLog(state, "ENTRY_ACTIVATING", {
         title: entry.title,
@@ -1596,7 +1600,7 @@
         return;
       }
 
-      state.phase = searchSettings ? "search-streak-open" : "execute-button";
+      state.phase = searchStreak ? "search-streak-open" : "execute-button";
       setState(state);
       await executeButton(state);
       return;
@@ -2174,43 +2178,13 @@
       <div class="brac-body">
         <header><div><small>BING REWARDS v${VERSION}</small><h1>简单积分领取</h1></div><span data-role="status">尚未运行</span></header>
         <div class="brac-schedule"><span>每日首次访问自动执行</span><strong>北京时间 09:00 后</strong></div>
-        <details class="brac-settings"><summary>搜索打卡设置</summary>
-          <form data-role="search-settings-form">
-            <label for="brac-search-query">打卡搜索词</label>
-            <input id="brac-search-query" data-role="search-query" type="text" maxlength="200" autocomplete="off" placeholder="填写要查询的内容">
-            <small>每天使用保存的搜索词完成一次打卡；留空则跳过。</small>
-            <button type="submit">保存搜索词</button>
-            <p data-role="search-settings-feedback" role="status" aria-live="polite"></p>
-          </form>
-        </details>
+        <p>搜索打卡自动使用随机字符串，无需设置。</p>
         <button class="brac-run" data-role="run" type="button">立即领取</button>
         <section class="brac-progress" data-role="progress" hidden><small data-role="progress-meta"></small><strong data-role="progress-title"></strong></section>
         <section class="brac-summary"><div><small>最近结果</small><strong data-role="summary">完成 0 · 跳过 0 · 失败 0</strong><small data-role="memory">已识别 0 个任务入口</small></div><time data-role="finished"></time></section>
         <div class="brac-results" data-role="results"></div>
         <details class="brac-logs"><summary>运行日志</summary><pre data-role="logs">暂无日志</pre></details>
       </div>`;
-  }
-
-  function bindSearchSettings(root) {
-    const input = root.querySelector('[data-role="search-query"]');
-    const form = root.querySelector('[data-role="search-settings-form"]');
-    const feedback = root.querySelector('[data-role="search-settings-feedback"]');
-    input.value = searchQuerySetting().query;
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const { query, error } = searchQuerySetting(input.value);
-      if (error === "SEARCH_QUERY_INVALID") {
-        feedback.textContent = REASON_LABELS[error];
-        return;
-      }
-      try {
-        writeValue(SEARCH_QUERY_KEY, query);
-        input.value = query;
-        feedback.textContent = query ? "已保存到本机，后续任务使用此搜索词。" : "已清空，将跳过搜索打卡。";
-      } catch {
-        feedback.textContent = "保存失败，请重试。";
-      }
-    });
   }
 
   function mountPanel() {
@@ -2227,11 +2201,9 @@
       .brac-schedule,.brac-summary{margin-top:16px;border:1px solid #e4e7ec;border-radius:12px;padding:13px;background:#fff;font-size:12px}.brac-run{width:100%;min-height:44px;margin-top:14px;border:0;border-radius:10px;background:#175cd3;color:#fff;font:inherit;font-weight:700;cursor:pointer}.brac-run:disabled{opacity:.55;cursor:wait}
       .brac-progress{margin-top:12px;border:1px solid #84adff;border-radius:12px;padding:12px 14px;background:#eff8ff}.brac-progress[hidden]{display:none}.brac-progress strong{display:block;margin-top:4px;color:#1849a9;font-size:14px}.brac-summary strong{display:block;margin:3px 0;font-size:13px}.brac-summary time{color:#667085;font-size:11px}.brac-results{display:grid;gap:8px;margin-top:14px}.brac-item{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;border-left:3px solid #98a2b3;padding:8px 9px;background:#fff;font-size:11px}.brac-item[data-outcome="COMPLETED"]{border-left-color:#079455}.brac-item[data-outcome="FAILED"]{border-left-color:#d92d20}.brac-item strong{display:block;font-size:12px}.brac-item small{margin-top:3px}.brac-outcome{flex:none;color:#475467}
       .brac-logs{margin-top:14px;border:1px solid #e4e7ec;border-radius:10px;padding:10px;background:#fff;font-size:12px}.brac-logs summary{cursor:pointer;font-weight:700}.brac-logs pre{overflow:auto;max-height:220px;margin:10px 0 0;white-space:pre-wrap;color:#475467;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
-      .brac-settings{margin-top:12px;border:1px solid #e4e7ec;border-radius:10px;padding:12px;background:#fff;font-size:12px}.brac-settings summary{cursor:pointer;font-weight:700}.brac-settings form{display:grid;gap:9px;margin-top:12px}.brac-settings label{font-weight:650}.brac-settings input{box-sizing:border-box;width:100%;min-width:0;min-height:36px;border:1px solid #d0d5dd;border-radius:7px;padding:8px;font:inherit;color:#162033;background:#fff}.brac-settings button{justify-self:start;border:0;border-radius:7px;padding:8px 12px;background:#175cd3;color:#fff;font:inherit;cursor:pointer}.brac-settings p{margin:0;color:#475467;line-height:1.5}.brac-settings :is(input,button,summary):focus-visible{outline:3px solid #84adff;outline-offset:2px}
     `;
     widget.root.append(style);
     widget.content.innerHTML = panelMarkup();
-    bindSearchSettings(widget.root);
     widget.root.querySelector('[data-role="run"]').addEventListener("click", () => startRun("manual"));
   }
 
@@ -2316,7 +2288,7 @@
   const testApi = {
     initializeTabIdentity,
     canRestartRun,
-    bindSearchSettings,
+    createRandomSearchQuery,
     getSearchStreakProgress,
     submitBingSearch,
     activateSearchStreakLink,

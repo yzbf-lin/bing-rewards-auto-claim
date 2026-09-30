@@ -2,6 +2,7 @@ import { beijingDateKey } from "./scheduler.js";
 import { summarizeResults } from "./results.js";
 import { classifyEntry } from "../shared/task-policy.js";
 import { rememberTask, taskMemoryKey } from "../shared/task-memory.js";
+import { createRandomSearchQuery } from "../shared/search-query.js";
 
 function serializeError(error) {
   if (error instanceof Error) return error.message;
@@ -54,11 +55,7 @@ export function createClaimRunner({
         logger.warn("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
       }
     }
-    const stored = await storage.get(["taskMemory", "searchQuery"]);
-    const rawSearchQuery = stored.searchQuery ?? "";
-    const searchQuery = typeof rawSearchQuery === "string" ? rawSearchQuery.trim() : "";
-    const searchQueryError = typeof rawSearchQuery !== "string" || searchQuery.length > 200 || /[\u0000-\u001f\u007f]/.test(rawSearchQuery)
-      ? "SEARCH_QUERY_INVALID" : !searchQuery ? "SEARCH_QUERY_REQUIRED" : null;
+    const stored = await storage.get(["taskMemory"]);
     let taskMemory = stored.taskMemory ?? {};
     const runDateKey = beijingDateKey(startedAt);
 
@@ -145,9 +142,6 @@ export function createClaimRunner({
               rewardPoints: recognition.rewardPoints,
             }
             : recognition;
-        if (decision.decision === "ELIGIBLE" && recognition.reason === "SEARCH_STREAK" && searchQueryError) {
-          decision = { ...recognition, decision: "SKIPPED", reason: searchQueryError };
-        }
         if (decision.decision === "ELIGIBLE" && recognition.reason === "SEARCH_STREAK" && searchStreakAttempted) {
           decision = { ...recognition, decision: "SKIPPED", reason: "SEARCH_STREAK_ALREADY_ATTEMPTED" };
         }
@@ -174,7 +168,8 @@ export function createClaimRunner({
 
         try {
           if (recognition.reason === "SEARCH_STREAK") searchStreakAttempted = true;
-          const actionContext = recognition.reason === "SEARCH_STREAK" ? { ...context, searchQuery } : context;
+          const actionContext = recognition.reason === "SEARCH_STREAK"
+            ? { ...context, searchQuery: createRandomSearchQuery() } : context;
           const actionResult = entry.kind === "link"
             ? await driver.executeLink(entry, actionContext)
             : await driver.executeButton(entry, actionContext);

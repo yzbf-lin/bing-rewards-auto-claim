@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { getSearchStreakProgress } from "../src/shared/search-streak.js";
+import { createRandomSearchQuery } from "../src/shared/search-query.js";
 import { activateSearchStreakLink, submitBingSearch } from "../src/content/search-actions.js";
 
 const source = readFileSync(new URL("../userscript/bing-rewards-auto-claim.user.js", import.meta.url), "utf8");
@@ -11,10 +13,10 @@ const queryKey = "bingRewardsAutoClaimSearchQuery";
 const stateKey = "bingRewardsAutoClaimState";
 const candidate = { section: "连续打卡任务", title: "必应搜索连续打卡", text: "必应搜索连续打卡 +3 搜索: 0/1", kind: "link", url: "https://www.bing.com/", source: "earn", sourceUrl };
 
-function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, href = sourceUrl, progress = 0, missing = false, wrongCard = false, delayedReads = 0, preventSubmit = false, unloadOnCardNavigation = false, unloadOnSearchNavigation = false, buttonCard = false } = {}) {
+function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, href = sourceUrl, progress = 0, missing = false, wrongCard = false, delayedReads = 0, preventSubmit = false, unloadOnCardNavigation = false, unloadOnSearchNavigation = false, buttonCard = false, failRandom = false } = {}) {
   const location = { href, assign(value) { this.href = value; } };
   let unloaded = false;
-  const counters = { submissions: 0, clicks: 0, reads: 0, writes: [] };
+  const counters = { submissions: 0, clicks: 0, reads: 0, writes: [], settingsReads: 0, randomCalls: 0, logs: [] };
   const names = ["连续打卡任务", "升级活动", "任务", "日常任务"];
   const attrs = new Map();
   const title = wrongCard ? "每日连续打卡活动" : candidate.title;
@@ -74,14 +76,15 @@ function runtime({ store = new Map(), tabData = {}, tabApi = true, openTabs, hre
   };
   const context = vm.createContext({
     __BING_REWARDS_USERSCRIPT_TEST__: true, URL, document, location, window: { location, open() {} },
-    GM_getValue(key, fallback) { return store.has(key) ? structuredClone(store.get(key)) : fallback; },
+    crypto: { getRandomValues(values) { counters.randomCalls++; if (failRandom) throw new Error("random unavailable"); return webcrypto.getRandomValues(values); } },
+    GM_getValue(key, fallback) { if (key === queryKey) counters.settingsReads++; return store.has(key) ? structuredClone(store.get(key)) : fallback; },
     GM_setValue(key, value) { store.set(key, structuredClone(value)); counters.writes.push({ key, value: structuredClone(value) }); },
     ...(tabApi ? {
       GM_getTab(callback) { callback(structuredClone(tabData)); },
       GM_saveTab(value) { Object.assign(tabData, structuredClone(value)); },
       GM_getTabs(callback) { callback(structuredClone(openTabs ?? { current: tabData })); },
     } : {}),
-    setTimeout(callback) { if (unloaded) throw new Error("DOCUMENT_UNLOADED"); callback(); return 1; }, console: { info() {}, warn() {} },
+    setTimeout(callback) { if (unloaded) throw new Error("DOCUMENT_UNLOADED"); callback(); return 1; }, console: { info(...values) { counters.logs.push(values); }, warn(...values) { counters.logs.push(values); } },
   });
   vm.runInContext(source, context);
   const api = context.__BING_REWARDS_USERSCRIPT_API__;
@@ -102,29 +105,62 @@ function pendingRun(rt, phase = "search-streak-submit") {
 
 test("userscript embeds the same search recognition and native submission helpers", () => {
   const { api } = runtime();
-  for (const helper of [getSearchStreakProgress, submitBingSearch, activateSearchStreakLink]) {
+  for (const helper of [getSearchStreakProgress, createRandomSearchQuery, submitBingSearch, activateSearchStreakLink]) {
     assert.equal(api[helper.name]?.toString().replace(/\s+/g, " "), helper.toString().replace(/\s+/g, " "));
   }
   assert.equal(api.classifyEntry(candidate).reason, "SEARCH_STREAK");
   assert.equal(api.classifyEntry({ ...candidate, text: "搜索: 1/1 连续 3/7 天", signals: { completed: false } }).reason, "COMPLETED");
 });
 
-test("empty and malformed saved queries skip search without interrupting the run", async () => {
-  for (const [query, reason] of [["  ", "SEARCH_QUERY_REQUIRED"], ["x".repeat(201), "SEARCH_QUERY_INVALID"], ["one\ntwo", "SEARCH_QUERY_INVALID"]]) {
-    const rt = runtime({ store: new Map([[queryKey, query]]) });
+test("search runs without configuration and ignores every legacy saved query", async () => {
+  for (const query of [undefined, "  ", "old preset query", "x".repeat(201), "one\ntwo"]) {
+    const rt = runtime({ store: new Map(query === undefined ? [] : [[queryKey, query]]), unloadOnCardNavigation: true });
     const state = rt.api.createRun("manual");
     state.catalog = [candidate];
     state.claimsRefreshed = true;
-    await rt.api.executeCatalog(state);
-    assert.equal(state.results[0]?.reason, reason);
-    assert.equal(state.results[0]?.outcome, "SKIPPED");
-    assert.equal(rt.counters.clicks, 0);
+    await assert.rejects(rt.api.executeCatalog(state), /DOCUMENT_UNLOADED/);
+    assert.match(state.pending.searchQuery, /^[0-9a-f]{16}$/);
+    assert.notEqual(state.pending.searchQuery, query);
+    assert.equal(rt.counters.randomCalls, 1);
+    assert.equal(rt.counters.settingsReads, 0);
+    assert.equal(rt.counters.clicks, 1);
     assert.equal(rt.counters.submissions, 0);
+    assert.equal(JSON.stringify(state.logs).includes(state.pending.searchQuery), false);
+    assert.equal(JSON.stringify(rt.counters.logs).includes(state.pending.searchQuery), false);
   }
 });
 
+test("manual and automatic new runs each generate a fresh query", async () => {
+  const queries = [];
+  for (const trigger of ["automatic", "manual", "automatic", "manual"]) {
+    const rt = runtime({ unloadOnCardNavigation: true });
+    const state = rt.api.createRun(trigger);
+    state.catalog = [candidate];
+    state.claimsRefreshed = true;
+    await assert.rejects(rt.api.executeCatalog(state), /DOCUMENT_UNLOADED/);
+    queries.push(state.pending.searchQuery);
+    assert.match(state.pending.searchQuery, /^[0-9a-f]{16}$/);
+    assert.equal(rt.counters.randomCalls, 1);
+  }
+  assert.equal(new Set(queries).size, queries.length);
+});
+
+test("random generation failure is explicit and never falls back to a saved query", async () => {
+  const rt = runtime({ failRandom: true, store: new Map([[queryKey, "old preset query"]]) });
+  const state = rt.api.createRun("manual");
+  state.catalog = [candidate];
+  state.claimsRefreshed = true;
+  await rt.api.executeCatalog(state);
+  assert.equal(state.results[0]?.reason, "SEARCH_QUERY_GENERATION_FAILED");
+  assert.equal(state.results[0]?.outcome, "FAILED");
+  assert.equal(rt.counters.randomCalls, 1);
+  assert.equal(rt.counters.settingsReads, 0);
+  assert.equal(rt.counters.clicks, 0);
+  assert.equal(rt.counters.submissions, 0);
+});
+
 test("a button-based streak waits for its dialog instead of submitting a search on Rewards", async () => {
-  const rt = runtime({ buttonCard: true, store: new Map([[queryKey, "aurora forecast"]]) });
+  const rt = runtime({ buttonCard: true });
   const state = rt.api.createRun("manual");
   state.catalog = [{ ...candidate, kind: "button", url: null }];
   state.claimsRefreshed = true;
@@ -134,19 +170,23 @@ test("a button-based streak waits for its dialog instead of submitting a search 
   assert.equal(state.results[0]?.reason, "SEARCH_STREAK_LINK_UNAVAILABLE");
 });
 
-test("saved query survives the card navigation and only verified progress completes the task", async () => {
-  const first = runtime({ store: new Map([[queryKey, "  aurora forecast  "]]), unloadOnCardNavigation: true });
+test("one generated query survives navigation and only verified progress completes the task", async () => {
+  const first = runtime({ unloadOnCardNavigation: true });
   const state = first.api.createRun("automatic");
   state.catalog = [candidate]; state.claimsRefreshed = true;
   await assert.rejects(first.api.executeCatalog(state), /DOCUMENT_UNLOADED/);
   assert.equal(first.counters.clicks, 1);
   const persisted = first.store.get(stateKey);
   assert.equal(persisted.phase, "execute-link-wait");
-  assert.equal(persisted.pending.searchQuery, "aurora forecast");
+  const query = persisted.pending.searchQuery;
+  assert.match(query, /^[0-9a-f]{16}$/);
+  assert.equal(first.counters.randomCalls, 1);
 
   const search = runtime({ store: first.store, tabData: first.tabData, href: candidate.url, unloadOnSearchNavigation: true });
   await assert.rejects(search.api.resumePhase(persisted), /DOCUMENT_UNLOADED/);
   assert.equal(search.counters.submissions, 1);
+  assert.equal(search.field.value, query);
+  assert.equal(search.counters.randomCalls, 0);
   assert.equal(persisted.phase, "search-streak-wait");
   assert.equal(persisted.results.length, 0);
 
@@ -154,6 +194,7 @@ test("saved query survives the card navigation and only verified progress comple
   await results.api.resumePhase(results.store.get(stateKey));
   assert.equal(results.location.href, sourceUrl);
   assert.equal(results.counters.submissions, 0);
+  assert.equal(results.counters.randomCalls, 0);
 
   const verify = runtime({ store: first.store, tabData: first.tabData, progress: 1, delayedReads: 3 });
   const restored = verify.store.get(stateKey);
@@ -161,7 +202,8 @@ test("saved query survives the card navigation and only verified progress comple
   assert.equal(restored.results[0].reason, "SEARCH_STREAK_COMPLETED");
   assert.equal(restored.results[0].outcome, "COMPLETED");
   assert.equal(verify.counters.submissions, 0);
-  assert.doesNotMatch(JSON.stringify(restored.logs), /aurora forecast/);
+  assert.equal(verify.counters.randomCalls, 0);
+  assert.equal(JSON.stringify(restored.logs).includes(query), false);
 });
 
 test("reloading after submission never submits again on results or the source page", async () => {
@@ -298,7 +340,7 @@ test("manual restart is available only after the original owner tab has closed",
 });
 
 test("userscript does not search again for another source copy after unconfirmed progress", async () => {
-  const rt = runtime({ store: new Map([[queryKey, "aurora forecast"]]) });
+  const rt = runtime();
   const state = pendingRun(rt, "search-streak-verify");
   state.pending.searchSubmitted = true;
   state.searchStreakAttempted = true;
@@ -308,27 +350,10 @@ test("userscript does not search again for another source copy after unconfirmed
   assert.equal(state.results[1].reason, "SEARCH_STREAK_ALREADY_ATTEMPTED");
   assert.equal(state.results[1].outcome, "SKIPPED");
   assert.equal(rt.counters.submissions, 0);
+  assert.equal(rt.counters.randomCalls, 0);
 });
 
-test("userscript settings restore, save trimmed text and clear the stored query", () => {
-  const rt = runtime({ store: new Map([[queryKey, "原搜索词"]]) });
-  let submit;
-  const input = { value: "" };
-  const feedback = { textContent: "" };
-  const form = { addEventListener(_type, listener) { submit = listener; } };
-  const controls = { '[data-role="search-query"]': input, '[data-role="search-settings-form"]': form, '[data-role="search-settings-feedback"]': feedback };
-  rt.api.bindSearchSettings({ querySelector: selector => controls[selector] });
-  assert.equal(input.value, "原搜索词");
-  input.value = "  <b>星空</b>  ";
-  submit({ preventDefault() {} });
-  assert.equal(rt.store.get(queryKey), "<b>星空</b>");
-  assert.match(feedback.textContent, /已保存/);
-  input.value = " ";
-  submit({ preventDefault() {} });
-  assert.equal(rt.store.get(queryKey), "");
-  assert.match(feedback.textContent, /跳过/);
-  input.value = "x".repeat(201);
-  submit({ preventDefault() {} });
-  assert.equal(rt.store.get(queryKey), "");
-  assert.match(feedback.textContent, /200/);
+test("userscript explains automatic random strings without displaying saved-query settings", () => {
+  assert.ok(source.includes("搜索打卡自动使用随机字符串，无需设置。"));
+  assert.equal(/search-settings-form|data-role="search-query"|bindSearchSettings|brac-settings|SEARCH_QUERY_KEY/.test(source), false);
 });

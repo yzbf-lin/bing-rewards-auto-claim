@@ -7,79 +7,86 @@ const normal = { id: "normal", title: "今日主题", text: "今日主题 +5", k
 
 function setup(query, { fail = false, entries = [streak, normal] } = {}) {
   const state = { searchQuery: query };
-  const calls = [];
-  const logs = [];
+  const calls = [], logs = [], reads = [];
   const storage = {
-    async get(keys) { return Object.fromEntries([keys].flat().map((key) => [key, state[key]])); },
+    async get(keys) { reads.push(...[keys].flat()); return Object.fromEntries([keys].flat().map(key => [key, state[key]])); },
     async set(value) { Object.assign(state, structuredClone(value)); },
   };
-  const driver = {
-    async loadCatalog() { return { entries, missingSections: [] }; },
-    async executeLink(entry, context) {
-      calls.push({ id: entry.id, context });
-      if (entry.id === streak.id && fail) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
-      return { reason: entry.id === streak.id ? "SEARCH_STREAK_COMPLETED" : "ACTION_TRIGGERED" };
-    },
-    async executeButton(entry, context) {
-      calls.push({ id: entry.id, context });
-      return { reason: "SEARCH_STREAK_COMPLETED" };
-    },
-    async cleanup() {},
+  const execute = async (entry, context) => {
+    calls.push({ id: entry.id, context });
+    if (entry.id === streak.id && fail) throw new Error("SEARCH_STREAK_NOT_CONFIRMED");
+    return { reason: entry.id === streak.id ? "SEARCH_STREAK_COMPLETED" : "ACTION_TRIGGERED" };
   };
-  return { state, calls, logs, runner: createClaimRunner({ driver, storage, logger: { info(...args) { logs.push(args); }, warn(...args) { logs.push(args); } } }) };
+  const driver = { async loadCatalog() { return { entries, missingSections: [] }; }, executeLink: execute, executeButton: execute, async cleanup() {} };
+  return { state, calls, logs, reads, runner: createClaimRunner({ driver, storage, logger: { info(...args) { logs.push(args); }, warn(...args) { logs.push(args); } } }) };
 }
 
-test("missing search query skips only the search streak and gives an actionable reason", async () => {
-  const runtime = setup("  ");
-  const run = await runtime.runner.run();
-  assert.equal(run.results[0].reason, "SEARCH_QUERY_REQUIRED");
-  assert.equal(run.results[0].outcome, "SKIPPED");
-  assert.deepEqual(runtime.calls.map((call) => call.id), ["normal"]);
-});
-
-test("runner passes the saved trimmed query only to the streak executor without logging it", async () => {
-  const runtime = setup("  aurora forecasting  ");
-  const run = await runtime.runner.run("scheduled", { targetTabId: 7 });
-  assert.deepEqual(runtime.calls, [
-    { id: "search-streak", context: { targetTabId: 7, searchQuery: "aurora forecasting" } },
-    { id: "normal", context: { targetTabId: 7 } },
-  ]);
-  assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
-  assert.doesNotMatch(JSON.stringify([run, runtime.logs]), /aurora forecasting/);
-});
-
-test("runner passes the saved query to the real button-based search streak", async () => {
-  const rt = setup("  aurora forecasting  ", { entries: [{ ...streak, kind: "button", url: null }] });
-  const run = await rt.runner.run("manual", { targetTabId: 7 });
-  assert.deepEqual(rt.calls, [{ id: streak.id, context: { targetTabId: 7, searchQuery: "aurora forecasting" } }]);
-  assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
-  assert.doesNotMatch(JSON.stringify([run, rt.logs]), /aurora forecasting/);
-});
-
-test("invalid saved query is skipped and never submitted", async () => {
-  for (const value of [123, {}, "x".repeat(201), "one\ntwo"]) {
-    const runtime = setup(value);
-    const run = await runtime.runner.run();
-    assert.equal(run.results[0].reason, "SEARCH_QUERY_INVALID");
-    assert.equal(runtime.calls.length, 1);
-  }
-});
-
-test("unconfirmed search progress never becomes a successful task memory entry", async () => {
-  const runtime = setup("aurora forecasting", { fail: true });
-  const run = await runtime.runner.run();
-  assert.equal(run.results[0].outcome, "FAILED");
-  assert.equal(run.results[0].reason, "SEARCH_STREAK_NOT_CONFIRMED");
-  assert.equal(Object.values(runtime.state.taskMemory).find((item) => item.title === streak.title).lastCompletedDate, null);
-  assert.equal(run.results[1].outcome, "COMPLETED");
-});
-
-test("the same daily search in multiple catalog sources is attempted only once even after failure", async () => {
+test("search streak runs without settings in manual and scheduled modes", async () => {
   for (const trigger of ["manual", "scheduled"]) {
-    const rt = setup("aurora forecasting", { fail: true, entries: [streak, { ...streak, source: "dashboard" }, normal] });
-    const run = await rt.runner.run(trigger);
-    assert.deepEqual(rt.calls.map(call => call.id), ["search-streak", "normal"]);
-    assert.equal(run.results[1].outcome, "SKIPPED");
-    assert.equal(run.results[1].reason, "SEARCH_STREAK_ALREADY_ATTEMPTED");
+    const rt = setup(undefined);
+    const run = await rt.runner.run(trigger, { targetTabId: 7 });
+    assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
+    assert.match(rt.calls[0].context.searchQuery, /^[0-9a-f]{16}$/);
+    assert.equal(rt.calls[0].context.targetTabId, 7);
+    assert.deepEqual(rt.calls[1], { id: "normal", context: { targetTabId: 7 } });
+    assert.equal(rt.reads.includes("searchQuery"), false);
+    assert.equal(JSON.stringify([run, rt.logs]).includes(rt.calls[0].context.searchQuery), false);
   }
+});
+
+test("legacy empty, invalid and custom saved queries no longer affect execution", async () => {
+  for (const query of ["", "  ", "old-custom-query", 123, {}, "x".repeat(201), "one\ntwo"]) {
+    const rt = setup(query);
+    const run = await rt.runner.run("manual");
+    assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
+    assert.match(rt.calls[0].context.searchQuery, /^[0-9a-f]{16}$/);
+    assert.deepEqual(rt.state.searchQuery, query);
+  }
+});
+
+test("button-based search streak receives the generated query", async () => {
+  const rt = setup(undefined, { entries: [{ ...streak, kind: "button", url: null }] });
+  const run = await rt.runner.run("manual");
+  assert.equal(run.results[0].reason, "SEARCH_STREAK_COMPLETED");
+  assert.match(rt.calls[0].context.searchQuery, /^[0-9a-f]{16}$/);
+});
+
+test("each explicit new run generates a fresh query", async t => {
+  let nonce = 0;
+  t.mock.method(globalThis.crypto, "getRandomValues", bytes => bytes.fill(++nonce));
+  const rt = setup(undefined);
+  await rt.runner.run("manual");
+  await rt.runner.run("manual");
+  assert.deepEqual(rt.calls.filter(call => call.id === streak.id).map(call => call.context.searchQuery), ["0101010101010101", "0202020202020202"]);
+  assert.equal(nonce, 2);
+});
+
+test("unconfirmed progress is not completed and duplicate catalog copies do not generate or submit again", async t => {
+  let generated = 0;
+  t.mock.method(globalThis.crypto, "getRandomValues", bytes => bytes.fill(++generated));
+  const rt = setup(undefined, { fail: true, entries: [streak, { ...streak, source: "dashboard" }, normal] });
+  const run = await rt.runner.run("manual");
+  assert.equal(run.results[0].reason, "SEARCH_STREAK_NOT_CONFIRMED");
+  assert.equal(run.results[1].reason, "SEARCH_STREAK_ALREADY_ATTEMPTED");
+  assert.equal(Object.values(rt.state.taskMemory).find(item => item.title === streak.title).lastCompletedDate, null);
+  assert.deepEqual(rt.calls.map(call => call.id), ["search-streak", "normal"]);
+  assert.equal(generated, 1);
+});
+
+test("completed tasks do not consume a random query", async t => {
+  t.mock.method(globalThis.crypto, "getRandomValues", () => { throw new Error("must not generate"); });
+  const rt = setup(undefined, { entries: [{ ...streak, text: "搜索: 1/1" }, normal] });
+  const run = await rt.runner.run("manual");
+  assert.equal(run.results[0].reason, "COMPLETED");
+  assert.deepEqual(rt.calls.map(call => call.id), ["normal"]);
+});
+
+test("random generation failure does not prevent other rewards tasks", async t => {
+  t.mock.method(globalThis.crypto, "getRandomValues", () => { throw new Error("unavailable"); });
+  const rt = setup(undefined);
+  const run = await rt.runner.run("manual");
+  assert.equal(run.results[0].reason, "SEARCH_QUERY_GENERATION_FAILED");
+  assert.equal(run.results[0].outcome, "FAILED");
+  assert.equal(run.results[1].outcome, "COMPLETED");
+  assert.deepEqual(rt.calls.map(call => call.id), ["normal"]);
 });

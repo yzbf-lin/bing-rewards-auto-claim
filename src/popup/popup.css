@@ -68,89 +68,11 @@ h1 {
   font-size: 13px;
 }
 
-.search-settings {
-  margin-top: 12px;
-  border: 1px solid #e4e7ec;
-  border-radius: 12px;
-  padding: 12px 14px;
-  background: #fff;
-  font-size: 13px;
-}
-
-.search-settings summary {
-  color: #344054;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.search-settings-form {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.search-settings-form label {
-  color: #344054;
-  font-weight: 650;
-}
-
-.search-settings-form input {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 9px 10px;
-  color: #162033;
-  background: #fff;
-  font: inherit;
-}
-
-.search-settings-form input[aria-invalid="true"] {
-  border-color: #d92d20;
-}
-
-.settings-save-button {
-  justify-self: start;
-  border: 0;
-  border-radius: 8px;
-  padding: 8px 16px;
-  color: #1849a9;
-  background: #eff8ff;
-  font: inherit;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.settings-save-button:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
-.search-settings summary:focus-visible,
-.search-settings input:focus-visible,
-.settings-save-button:focus-visible {
-  outline: 3px solid #84adff;
-  outline-offset: 2px;
-}
-
-.settings-hint,
-.settings-feedback {
-  margin: 0;
+.search-note {
+  margin: 12px 2px 0;
   color: #667085;
   font-size: 12px;
   line-height: 1.5;
-}
-
-.settings-feedback:empty {
-  display: none;
-}
-
-.settings-feedback[data-status="error"] {
-  color: #b42318;
-}
-
-.settings-feedback[data-status="success"] {
-  color: #067647;
 }
 
 .update-card {
