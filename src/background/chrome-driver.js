@@ -9,9 +9,17 @@ import { solveImagePuzzle } from "../content/image-puzzle.js";
 import { activateSearchStreakLink, submitBingSearch } from "../content/search-actions.js";
 import { getSearchStreakProgress } from "../shared/search-streak.js";
 import { analyzeEntryFeatures } from "../shared/task-policy.js";
+import { beijingDateKey } from "./scheduler.js";
+import {
+  normalizeDailySearchProgress,
+  createDailySearchDelay,
+  selectDailySearchQuery,
+  collectDailySearchTerms,
+} from "../shared/daily-search.js";
 
 const REWARDS_URL = "https://rewards.bing.com/earn";
 const DASHBOARD_URL = "https://rewards.bing.com/dashboard";
+const BING_HOME_URL = "https://www.bing.com/";
 const CATALOG_SOURCES = [
   { key: "earn", url: REWARDS_URL, collector: collectRewardsEntries },
   { key: "dashboard", url: DASHBOARD_URL, collector: collectDashboardEntries },
@@ -25,6 +33,11 @@ function canScriptRewardsPage(value) {
   } catch {
     return false;
   }
+}
+
+// Self-contained for chrome.scripting.executeScript.
+function isBingSearchResultsReady() {
+  return document.readyState === "complete" && Boolean(document.querySelector("#b_results"));
 }
 
 function catalogSignature(catalog) {
@@ -51,6 +64,7 @@ export function createChromeDriver({
   settleDelayMs = 1_500,
   catalogAttempts = 40,
   delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = () => new Date(),
 }) {
   const createdTabs = new Set();
 
@@ -102,6 +116,8 @@ export function createChromeDriver({
 
   const waitForTabLoaded = (tabId, { previousUrl, navigate } = {}) => new Promise((resolve, reject) => {
     let settled = false;
+    let navigationComplete = !navigate;
+    let completedTab = null;
     const timeoutId = setTimeout(() => finish(reject, new Error("TAB_LOAD_TIMEOUT")), timeoutMs);
 
     const finish = (callback, value) => {
@@ -113,7 +129,9 @@ export function createChromeDriver({
       callback(value);
     };
     const onUpdated = (updatedTabId, changeInfo, tab) => {
-      if (updatedTabId === tabId && changeInfo.status === "complete" && !tab.pendingUrl) finish(resolve, tab);
+      if (updatedTabId !== tabId || changeInfo.status !== "complete" || tab.pendingUrl) return;
+      if (navigationComplete) finish(resolve, tab);
+      else completedTab = tab;
     };
     const onRemoved = (removedTabId) => {
       if (removedTabId === tabId) finish(reject, new Error("TAB_CLOSED"));
@@ -125,7 +143,9 @@ export function createChromeDriver({
       .then(async () => {
         // Listen before navigating so a fast redirect cannot complete unnoticed.
         if (navigate) await navigate();
+        navigationComplete = true;
         if (settled) return;
+        if (completedTab) return finish(resolve, completedTab);
         const tab = await chromeApi.tabs.get(tabId);
         // tabs.update can resolve while tabs.get still describes the old document.
         if (tab.status === "complete" && !tab.pendingUrl &&
@@ -228,6 +248,109 @@ export function createChromeDriver({
     async showProgress({ targetTabId } = {}) {
       if (!targetTabId) return false;
       return ensureProgressOverlay(targetTabId);
+    },
+
+    async runDailySearches({ targetTabId, dateKey, progress, onProgress } = {}) {
+      let state = normalizeDailySearchProgress(progress, dateKey);
+      let searchTab = null;
+      let candidates = [];
+      const assertCurrentDate = () => {
+        if (beijingDateKey(now()) !== dateKey) throw new Error("DAILY_SEARCH_DATE_CHANGED");
+      };
+      const collectTerms = async (tabId, waitForTerms = false) => {
+        for (let attempt = 0; attempt < (waitForTerms ? catalogAttempts : 1); attempt += 1) {
+          const results = await executeRewardsScript({ target: { tabId }, func: collectDailySearchTerms });
+          const terms = results?.[0]?.result;
+          if (!Array.isArray(terms)) throw new Error("DAILY_SEARCH_TERMS_UNAVAILABLE");
+          candidates.push(...terms);
+          if (selectDailySearchQuery(candidates, state.queries)) return;
+          if (waitForTerms && attempt < catalogAttempts - 1) await delay(500);
+          assertCurrentDate();
+        }
+      };
+
+      try {
+        assertCurrentDate();
+        if (state.completed >= 20) {
+          return { reason: "DAILY_SEARCH_ALREADY_COMPLETED", completedSearches: 20 };
+        }
+        if (targetTabId) {
+          searchTab = await chromeApi.tabs.get(targetTabId);
+          if (searchTab.status !== "complete" || searchTab.pendingUrl) searchTab = await waitForTabLoaded(targetTabId);
+          await collectTerms(targetTabId);
+          searchTab = await navigateExistingTab(targetTabId, BING_HOME_URL);
+        } else {
+          searchTab = await createTab(BING_HOME_URL);
+          await waitForTabLoaded(searchTab.id);
+        }
+        await collectTerms(searchTab.id, candidates.length === 0);
+
+        while (state.completed < 20) {
+          // Also pause before resuming a partially completed same-day batch.
+          if (state.completed > 0) await delay(createDailySearchDelay());
+          assertCurrentDate();
+          let query = selectDailySearchQuery(candidates, state.queries);
+          if (!query) {
+            searchTab = await navigateExistingTab(searchTab.id, BING_HOME_URL, Boolean(targetTabId));
+            await collectTerms(searchTab.id, true);
+            query = selectDailySearchQuery(candidates, state.queries);
+          }
+          if (!query) throw new Error("DAILY_SEARCH_TERMS_UNAVAILABLE");
+          assertCurrentDate();
+          const currentTab = await chromeApi.tabs.get(searchTab.id);
+          searchTab = await waitForTabLoaded(searchTab.id, {
+            previousUrl: currentTab.url,
+            navigate: async () => {
+              const results = await executeRewardsScript({
+                target: { tabId: searchTab.id }, func: submitBingSearch,
+                args: [query, { forceFullNavigation: true }],
+              });
+              if (!results?.[0]?.result?.submitted) throw new Error("SEARCH_SUBMIT_FAILED");
+            },
+          });
+          if (!canScriptRewardsPage(searchTab.url) ||
+              (searchTab.pendingUrl && !canScriptRewardsPage(searchTab.pendingUrl))) {
+            throw new Error("SCRIPTING_PAGE_UNSUPPORTED");
+          }
+          const resultUrl = new URL(searchTab.url);
+          const resultQueries = resultUrl.searchParams.getAll("q");
+          if (!/^\/search\/?$/i.test(resultUrl.pathname) ||
+              resultQueries.length !== 1 || resultQueries[0] !== query.trim()) {
+            throw new Error("SEARCH_SUBMIT_NOT_CONFIRMED");
+          }
+          let resultsReady = false;
+          for (let attempt = 0; attempt < catalogAttempts; attempt += 1) {
+            assertCurrentDate();
+            const readiness = await executeRewardsScript({
+              target: { tabId: searchTab.id }, func: isBingSearchResultsReady,
+            });
+            if (readiness?.[0]?.result === true) {
+              resultsReady = true;
+              break;
+            }
+            if (attempt < catalogAttempts - 1) await delay(500);
+          }
+          if (!resultsReady) throw new Error("SEARCH_SUBMIT_NOT_CONFIRMED");
+          assertCurrentDate();
+          state = { dateKey, completed: state.completed + 1, queries: [...state.queries, query] };
+          // Persist confirmed submissions before any further navigation or collection.
+          if (typeof onProgress === "function") await onProgress(structuredClone(state));
+          if (targetTabId) await ensureProgressOverlay(targetTabId);
+          if (state.completed < 20) await collectTerms(searchTab.id);
+        }
+        // Let the last result page finish its native requests before cleanup or restore.
+        await delay(settleDelayMs);
+        return {
+          reason: "DAILY_SEARCH_COMPLETED", completedSearches: 20,
+          expectedPoints: 60, pointsVerified: false, rewardPoints: null,
+        };
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        failure.completedSearches = state.completed;
+        throw failure;
+      } finally {
+        if (!targetTabId && searchTab) await removeTab(searchTab.id);
+      }
     },
 
     async loadCatalog({ targetTabId } = {}) {

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bing Rewards 简单积分领取
 // @namespace    https://github.com/yzbf-lin/bing-rewards-auto-claim
-// @version      0.4.6
-// @description  自动完成 Bing Rewards 单步任务、每日单次搜索打卡、3×3 滑块拼图并领取仪表盘待领积分，适用于 Chrome；Edge 暂不支持。
+// @version      0.5.1
+// @description  自动完成 Bing Rewards 单步任务、搜索打卡、滑块拼图和积分领取，最后执行每日 20 次页面随机词搜索，适用于 Chrome；Edge 暂不支持。
 // @author       yzbf-lin
 // @license      MIT
 // @match        https://rewards.bing.com/*
@@ -25,10 +25,11 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.4.6";
+  const VERSION = "0.5.1";
   const STATE_KEY = "bingRewardsAutoClaimState";
   const MEMORY_KEY = "bingRewardsAutoClaimMemory";
   const AUTO_DATE_KEY = "bingRewardsAutoClaimLastAutomaticDate";
+  const DAILY_SEARCH_PROGRESS_KEY = "bingRewardsAutoClaimDailySearchProgress";
   const PANEL_ID = "bing-rewards-userscript-panel";
   const RUNNER_KEY = "__bingRewardsUserscriptRunner";
   const REWARDS_URL = "https://rewards.bing.com/earn";
@@ -80,6 +81,10 @@
     SEARCH_SUBMIT_NOT_CONFIRMED: "未确认搜索结果页加载，已停止本次搜索",
     SEARCH_STREAK_NOT_CONFIRMED: "搜索已尝试，尚未确认今日打卡 1/1",
     SEARCH_STREAK_DATE_CHANGED: "日期已变化，请重新运行以核对今日任务",
+    DAILY_SEARCH_COMPLETED: "今日 20 次搜索已确认，预计可获 60 分，实际到账以 Rewards 为准",
+    DAILY_SEARCH_ALREADY_COMPLETED: "本脚本今日已确认 20 次搜索，不再重复提交",
+    DAILY_SEARCH_TERMS_UNAVAILABLE: "页面上没有可用且未使用过的搜索词，已停止每日搜索",
+    DAILY_SEARCH_DATE_CHANGED: "日期已变化，每日搜索已停止；请重新运行",
     ACTION_TRIGGERED: "已触发领取动作",
     IMAGE_PUZZLE: "可自动完成的滑块拼图",
     PUZZLE_COMPLETED: "拼图已完成并确认",
@@ -293,7 +298,149 @@
     }
   }
 
-  async function submitBingSearch(query) {
+  // Keep each helper self-contained: the userscript embeds these functions verbatim.
+  function normalizeDailySearchProgress(saved, dateKey) {
+    const result = { dateKey, completed: 0, queries: [] };
+    if (!saved || saved.dateKey !== dateKey) return result;
+    if (Number.isInteger(saved.completed) && saved.completed >= 0 && saved.completed <= 20) {
+      result.completed = saved.completed;
+    }
+    const seen = new Set();
+    for (const value of Array.isArray(saved.queries) ? saved.queries : []) {
+      if (typeof value !== "string" || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) continue;
+      const query = value.replace(/\s+/gu, " ").trim().slice(0, 80).replace(/[\uD800-\uDBFF]$/u, "").trim();
+      if (query.length < 2 || !/\p{L}/u.test(query) ||
+          /(?:[a-z][a-z\d+.-]*:\/\/|\bwww\.)/iu.test(query) ||
+          /^(?:(?:javascript|data|mailto|file|about):|\/\/|[^\s]+\.\p{L}{2,}(?:[/?#][^\s]*)?$)/iu.test(query)) continue;
+      const key = query.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.queries.push(query);
+    }
+    return result;
+  }
+
+  function createDailySearchDelay(random = Math.random) {
+    const value = typeof random === "function" ? random() : 0.5;
+    const fraction = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+    return 8000 + Math.min(7000, Math.floor(fraction * 7001));
+  }
+
+  function selectDailySearchQuery(candidates, usedQueries = [], random = Math.random) {
+    const normalize = value => {
+      if (typeof value !== "string" || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return null;
+      const query = value.replace(/\s+/gu, " ").trim().slice(0, 80).replace(/[\uD800-\uDBFF]$/u, "").trim();
+      if (query.length < 2 || !/\p{L}/u.test(query) ||
+          /(?:[a-z][a-z\d+.-]*:\/\/|\bwww\.)/iu.test(query) ||
+          /^(?:(?:javascript|data|mailto|file|about):|\/\/|[^\s]+\.\p{L}{2,}(?:[/?#][^\s]*)?$)/iu.test(query)) return null;
+      return query;
+    };
+    const seen = new Set((Array.isArray(usedQueries) ? usedQueries : [])
+      .map(normalize).filter(Boolean).map(query => query.toLowerCase()));
+    const available = [];
+    for (const value of Array.isArray(candidates) ? candidates : []) {
+      const query = normalize(value);
+      if (!query || seen.has(query.toLowerCase())) continue;
+      seen.add(query.toLowerCase());
+      available.push(query);
+    }
+    if (!available.length) return null;
+    const value = typeof random === "function" ? random() : 0.5;
+    const fraction = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;
+    return available[Math.min(available.length - 1, Math.floor(fraction * available.length))];
+  }
+
+  function collectDailySearchTerms() {
+    const pageDocument = globalThis.document;
+    if (typeof pageDocument?.querySelectorAll !== "function") return [];
+    let pageUrl;
+    try {
+      pageUrl = new URL(globalThis.location?.href ?? pageDocument.location?.href ?? pageDocument.defaultView?.location?.href);
+      if (pageUrl.protocol !== "https:" || pageUrl.username || pageUrl.password || pageUrl.port ||
+          !(pageUrl.hostname === "bing.com" || pageUrl.hostname.endsWith(".bing.com"))) return [];
+    } catch {
+      return [];
+    }
+    const terms = [];
+    const seen = new Set();
+    const excludedContainers = [
+      "[hidden]", '[aria-hidden="true"]', "[inert]", "[contenteditable]", "input", "textarea", "form",
+      "header", "nav", '[role="navigation"]', '[role="banner"]', '[role="listbox"]',
+      "#id_h", "#id_d", "#id_rh", "#id_rfly", "#id_rewards", "#rewards", "#rewardsFlyout",
+      '[id*="rewards" i]', '[class*="rewards" i]', '[data-testid*="rewards" i]',
+      "#sa_ul", "#sw_as", ".sa_as", ".sa_sg", '[id*="history" i]', '[class*="history" i]',
+      '[id*="recent" i]', '[class*="recent" i]', '[id*="personal" i]', '[class*="personal" i]',
+      '[aria-label*="history" i]', '[aria-label*="历史" i]', '[aria-label*="最近" i]',
+      '[aria-label*="account" i]', '[aria-label*="账户" i]', '[aria-label*="帐户" i]',
+    ].join(", ");
+    const visible = element => {
+      if (!element || element.hidden || element.closest?.(excludedContainers)) return false;
+      if (typeof element.getClientRects === "function" && !element.getClientRects().length) return false;
+      const view = pageDocument.defaultView ?? globalThis;
+      const style = typeof view.getComputedStyle === "function" ? view.getComputedStyle(element) : null;
+      return !style || (style.display !== "none" && style.visibility !== "hidden" &&
+        style.visibility !== "collapse" && style.opacity !== "0");
+    };
+    const add = value => {
+      if (typeof value !== "string") return;
+      // DOM headings often contain line breaks; flatten layout whitespace before validation.
+      const query = value.replace(/[\t\r\n]+/gu, " ").replace(/\s+/gu, " ").trim()
+        .slice(0, 80).replace(/[\uD800-\uDBFF]$/u, "").trim();
+      if (query.length < 2 || /[\u0000-\u001f\u007f-\u009f]/u.test(query) || !/\p{L}/u.test(query) ||
+          /(?:[a-z][a-z\d+.-]*:\/\/|\bwww\.)/iu.test(query) ||
+          /^(?:(?:javascript|data|mailto|file|about):|\/\/|[^\s]+\.\p{L}{2,}(?:[/?#][^\s]*)?$)/iu.test(query) ||
+          /^(?:sign in|sign out|log in|settings|privacy|terms|rewards|microsoft rewards|bing|news|images|videos|登录|登入|退出|设置|設定|隐私|隱私|账户|帐户|帳戶|奖励|獎勵|搜索历史|搜尋歷程|首页|首頁|主页|主頁|新闻|新聞|图片|圖片|视频|視頻)$/iu.test(query)) return;
+      const key = query.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      terms.push(query);
+    };
+    const text = element => typeof element.innerText === "string" ? element.innerText : element.textContent;
+    const searchQuery = element => {
+      try {
+        const href = element.getAttribute?.("href") ?? element.href;
+        if (typeof href !== "string" || !href) return null;
+        const target = new URL(href, pageUrl.href);
+        if (target.protocol !== "https:" || target.username || target.password || target.port ||
+            !(target.hostname === "bing.com" || target.hostname.endsWith(".bing.com")) ||
+            !/^\/search\/?$/u.test(target.pathname) || target.searchParams.getAll("q").length !== 1) return null;
+        return target.searchParams.get("q");
+      } catch {
+        return null;
+      }
+    };
+    const queryAll = selector => {
+      try { return pageDocument.querySelectorAll(selector); } catch { return []; }
+    };
+    for (const element of queryAll("#b_results h2 a, #b_results h2")) {
+      if (visible(element)) add(text(element));
+    }
+    for (const element of queryAll("#b_rs a[href], #b_relatedSearches a[href], #relatedSearches a[href], .b_rs a[href], .b_relSearches a[href], .b_relatedSearches a[href]")) {
+      if (visible(element)) add(searchQuery(element));
+    }
+    const homepage = pageUrl.pathname === "/";
+    if (homepage) {
+      // Public homepage hot/trending links vary between Bing locales. Their search
+      // destination is a more stable contract than their presentation classes.
+      for (const element of queryAll("a[href]")) {
+        if (visible(element)) add(searchQuery(element));
+      }
+    }
+    if (homepage || /^\/news(?:\/|$)/u.test(pageUrl.pathname)) {
+      for (const element of queryAll("#headline a, #headline .title, #hpcAttribution a, #musCard .title, #vs_cont .title, #vs_cont .t, #vs_cont a[title], #news .news-title, #news .news-card .title, #news .newsitem .title, #newscontainer .news-title, .news-card a.title")) {
+        if (!visible(element)) continue;
+        add(element.getAttribute?.("title") || text(element));
+      }
+      if (homepage && !terms.length) {
+        for (const element of queryAll("h1, h2")) {
+          if (visible(element)) add(text(element));
+        }
+      }
+    }
+    return terms;
+  }
+
+  async function submitBingSearch(query, { forceFullNavigation = false } = {}) {
     if (query == null || (typeof query === "string" && !query.trim())) {
       throw new Error("SEARCH_QUERY_REQUIRED");
     }
@@ -360,7 +507,11 @@
       if (!usable(field) || field.form !== form) throw new Error("SEARCH_FORM_UNAVAILABLE");
       if (!form.checkValidity()) throw new Error("SEARCH_FORM_INVALID");
       form.setAttribute("target", "_self");
-      if (typeof Form.prototype.requestSubmit === "function") {
+      if (forceFullNavigation) {
+        // Bing can intercept submit events to update results in the same document.
+        // Daily searches persist their state for a new document before submitting.
+        Form.prototype.submit.call(form);
+      } else if (typeof Form.prototype.requestSubmit === "function") {
         Form.prototype.requestSubmit.call(form);
       } else {
         const event = new EventType("submit", { bubbles: true, cancelable: true });
@@ -1555,8 +1706,243 @@
     await finishPendingAction(state);
   }
 
+  function rememberDailySearchTerms(state) {
+    const terms = collectDailySearchTerms();
+    if (!terms.length) return;
+    const known = new Set();
+    const merged = [...terms, ...(state.dailySearchTerms ?? [])].filter((term) => {
+      const key = term.toLocaleLowerCase();
+      if (known.has(key)) return false;
+      known.add(key);
+      return true;
+    }).slice(0, 120);
+    if (JSON.stringify(merged) !== JSON.stringify(state.dailySearchTerms)) {
+      state.dailySearchTerms = merged;
+      setState(state);
+    }
+  }
+
+  function readDailySearchProgress(dateKey) {
+    const saved = readValue(DAILY_SEARCH_PROGRESS_KEY, null);
+    const progress = normalizeDailySearchProgress(saved, dateKey);
+    return {
+      ...progress,
+      nextSearchAt: saved?.dateKey === dateKey && Number.isFinite(saved.nextSearchAt)
+        ? Math.max(0, saved.nextSearchAt) : 0,
+      lastConfirmedSearchId: saved?.dateKey === dateKey && typeof saved.lastConfirmedSearchId === "string"
+        ? saved.lastConfirmedSearchId : null,
+    };
+  }
+
+  function updateDailySearchStep(state, title) {
+    const completed = state.dailySearch?.completedSearches ?? 0;
+    state.currentStep = {
+      title: `${title}（${completed}/20）`,
+      section: "每日搜索",
+      status: "running",
+      index: completed,
+      total: 20,
+    };
+    setState(state);
+  }
+
+  function finishDailySearch(state, outcome, reason) {
+    if (!refreshOwnedState(state)) return;
+    const completedSearches = state.dailySearch?.completedSearches ?? 0;
+    if (!state.results.some((result) => result.scope === "daily-search")) {
+      state.results.push({
+        scope: "daily-search",
+        section: "每日搜索",
+        title: `每日搜索 ${completedSearches}/20`,
+        outcome,
+        reason,
+        completedSearches,
+        totalSearches: 20,
+        expectedPoints: completedSearches * 3,
+        pointsVerified: false,
+        rewardPoints: null,
+        durationMs: Math.max(0, Date.now() - (state.dailySearch?.startedAt ?? Date.now())),
+      });
+      state.summary = summarizeResults(state.results);
+      appendLog(state, reason, { completedSearches, totalSearches: 20, expectedPoints: completedSearches * 3, pointsVerified: false });
+    }
+    state.phase = "returning";
+    setCurrentStep(state, "正在返回积分页面", "运行状态");
+    if (navigateCurrentTab(REWARDS_URL)) return;
+    finishRun(state);
+  }
+
+  function dailySearchDateChanged(state) {
+    return state.dailySearch?.dateKey !== beijingDateKey();
+  }
+
+  async function completeDailySearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-completed") return;
+    // Keep the final results document alive while Bing finishes its page requests.
+    await delay(SETTLE_DELAY_MS);
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-completed") return;
+    finishDailySearch(state, dailySearchDateChanged(state) ? "FAILED" : "COMPLETED",
+      dailySearchDateChanged(state) ? "DAILY_SEARCH_DATE_CHANGED" : "DAILY_SEARCH_COMPLETED");
+  }
+
+  async function openDailySearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-open") return;
+    if (!state.dailySearch) {
+      const dateKey = beijingDateKey(new Date(state.startedAt));
+      const progress = readDailySearchProgress(dateKey);
+      state.dailySearch = {
+        dateKey,
+        startedAt: Date.now(),
+        completedSearches: progress.completed,
+        nextSearchAt: progress.nextSearchAt,
+        pendingQuery: null,
+      };
+      setState(state);
+    }
+    if (dailySearchDateChanged(state)) {
+      finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+      return;
+    }
+    const progress = readDailySearchProgress(state.dailySearch.dateKey);
+    state.dailySearch.completedSearches = progress.completed;
+    if (progress.completed >= 20) {
+      finishDailySearch(state, "SKIPPED", "DAILY_SEARCH_ALREADY_COMPLETED");
+      return;
+    }
+    updateDailySearchStep(state, "正在准备页面搜索词");
+    const page = new URL(location.href);
+    if (!isTrustedDestination(page.href) || page.hostname === "rewards.bing.com" ||
+        !/^\/(?:search\/?)?$/i.test(page.pathname)) {
+      if (navigateCurrentTab("https://www.bing.com/")) return;
+    }
+    rememberDailySearchTerms(state);
+    state.phase = "daily-search-submit";
+    setState(state);
+    await submitDailySearch(state);
+  }
+
+  async function submitDailySearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-submit") return;
+    if (dailySearchDateChanged(state)) {
+      finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+      return;
+    }
+    let progress = readDailySearchProgress(state.dailySearch.dateKey);
+    state.dailySearch.completedSearches = progress.completed;
+    if (progress.completed >= 20) {
+      finishDailySearch(state, "COMPLETED", "DAILY_SEARCH_COMPLETED");
+      return;
+    }
+    const deadline = Math.max(state.dailySearch.nextSearchAt || 0, progress.nextSearchAt);
+    while (Date.now() < deadline) {
+      updateDailySearchStep(state, "正在随机停顿");
+      await delay(deadline - Date.now());
+      if (!refreshOwnedState(state) || state.phase !== "daily-search-submit") return;
+      if (dailySearchDateChanged(state)) {
+        finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+        return;
+      }
+    }
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-submit") return;
+    progress = readDailySearchProgress(state.dailySearch.dateKey);
+    if (!state.dailySearch.pendingQuery) {
+      let query = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (!refreshOwnedState(state) || state.phase !== "daily-search-submit") return;
+        if (dailySearchDateChanged(state)) {
+          finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+          return;
+        }
+        rememberDailySearchTerms(state);
+        query = selectDailySearchQuery(state.dailySearchTerms ?? [], progress.queries);
+        if (query) break;
+        if (attempt < 19) await delay(500);
+      }
+      if (!query) {
+        // A results page can run out of new headings; try the homepage once.
+        const page = new URL(location.href);
+        if (page.pathname !== "/" && state.dailySearch.refillCompletedAt !== progress.completed) {
+          state.dailySearch.refillCompletedAt = progress.completed;
+          state.phase = "daily-search-open";
+          updateDailySearchStep(state, "正在从 Bing 首页补充搜索词");
+          if (navigateCurrentTab("https://www.bing.com/")) return;
+        }
+        finishDailySearch(state, "FAILED", "DAILY_SEARCH_TERMS_UNAVAILABLE");
+        return;
+      }
+      state.dailySearch.pendingQuery = query;
+      state.dailySearch.pendingId = uniqueId();
+      // Reserve the query before submitting so an uncertain attempt is never reused.
+      progress.queries.push(query);
+      writeValue(DAILY_SEARCH_PROGRESS_KEY, progress);
+    }
+    state.dailySearch.searchDocumentId = DOCUMENT_ID;
+    state.phase = "daily-search-wait";
+    updateDailySearchStep(state, "正在提交 Bing 搜索");
+    try {
+      await submitBingSearch(state.dailySearch.pendingQuery, { forceFullNavigation: true });
+    } catch (error) {
+      finishDailySearch(state, "FAILED", error.message || "SEARCH_SUBMIT_FAILED");
+      return;
+    }
+    await waitForDailySearch(state);
+  }
+
+  async function waitForDailySearch(state) {
+    if (!refreshOwnedState(state) || state.phase !== "daily-search-wait") return;
+    if (dailySearchDateChanged(state)) {
+      finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+      return;
+    }
+    let loaded = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (!refreshOwnedState(state) || state.phase !== "daily-search-wait") return;
+      if (dailySearchDateChanged(state)) {
+        finishDailySearch(state, "FAILED", "DAILY_SEARCH_DATE_CHANGED");
+        return;
+      }
+      const page = new URL(location.href);
+      if (state.dailySearch.searchDocumentId !== DOCUMENT_ID &&
+          isTrustedDestination(page.href) && page.hostname !== "rewards.bing.com" &&
+          /^\/search\/?$/i.test(page.pathname) &&
+          page.searchParams.getAll("q").length === 1 &&
+          page.searchParams.get("q") === state.dailySearch.pendingQuery &&
+          document.readyState === "complete" && document.querySelector("#b_results")) {
+        loaded = true;
+        break;
+      }
+      await delay(500);
+    }
+    if (!loaded) {
+      finishDailySearch(state, "FAILED", "SEARCH_SUBMIT_NOT_CONFIRMED");
+      return;
+    }
+    const progress = readDailySearchProgress(state.dailySearch.dateKey);
+    // Recover without recounting if navigation interrupted the two storage writes.
+    if (progress.lastConfirmedSearchId !== state.dailySearch.pendingId) {
+      progress.completed = Math.min(20, progress.completed + 1);
+      progress.lastConfirmedSearchId = state.dailySearch.pendingId;
+      progress.nextSearchAt = progress.completed < 20 ? Date.now() + createDailySearchDelay() : 0;
+      writeValue(DAILY_SEARCH_PROGRESS_KEY, progress);
+    }
+    state.dailySearch.completedSearches = progress.completed;
+    state.dailySearch.nextSearchAt = progress.nextSearchAt;
+    state.dailySearch.pendingQuery = null;
+    state.dailySearch.pendingId = null;
+    state.dailySearch.refillCompletedAt = null;
+    state.phase = progress.completed >= 20 ? "daily-search-completed" : "daily-search-submit";
+    updateDailySearchStep(state, "搜索结果页已确认");
+    appendLog(state, "DAILY_SEARCH_CONFIRMED", { completedSearches: progress.completed, totalSearches: 20 });
+    if (progress.completed >= 20) {
+      await completeDailySearch(state);
+      return;
+    }
+    await submitDailySearch(state);
+  }
+
   async function executeCatalog(state) {
     if (!refreshOwnedState(state)) return;
+    rememberDailySearchTerms(state);
     while (state.index < state.catalog.length) {
       const entry = state.catalog[state.index];
       setCurrentStep(state, entry.title || "未命名入口", entry.section || "积分任务");
@@ -1615,10 +2001,9 @@
       await resumePhase(state);
       return;
     }
-    state.phase = "returning";
-    setCurrentStep(state, "正在返回积分页面", "运行状态");
-    if (navigateCurrentTab(REWARDS_URL)) return;
-    finishRun(state);
+    state.phase = "daily-search-open";
+    setState(state);
+    await openDailySearch(state);
   }
 
   function finishRun(state) {
@@ -1696,6 +2081,23 @@
   async function resumePhase(state) {
     await initializeTabIdentity();
     if (!refreshOwnedState(state)) return;
+    rememberDailySearchTerms(state);
+    if (state.phase === "daily-search-open") {
+      await openDailySearch(state);
+      return;
+    }
+    if (state.phase === "daily-search-submit") {
+      await submitDailySearch(state);
+      return;
+    }
+    if (state.phase === "daily-search-wait") {
+      await waitForDailySearch(state);
+      return;
+    }
+    if (state.phase === "daily-search-completed") {
+      await completeDailySearch(state);
+      return;
+    }
     if (state.phase === "search-streak-open") {
       await executeButton(state);
       return;
@@ -2181,7 +2583,7 @@
       <div class="brac-body">
         <header><div><small>BING REWARDS v${VERSION}</small><h1>简单积分领取</h1></div><span data-role="status">尚未运行</span></header>
         <div class="brac-schedule"><span>每日首次访问自动执行</span><strong>北京时间 09:00 后</strong></div>
-        <p>搜索打卡自动使用随机字符串，无需设置。</p>
+        <p>搜索打卡自动使用随机字符串，无需设置。最后进行 20 次每日搜索，随机停顿 8–15 秒，搜索词来自页面。</p>
         <button class="brac-run" data-role="run" type="button">立即领取</button>
         <section class="brac-progress" data-role="progress" hidden><small data-role="progress-meta"></small><strong data-role="progress-title"></strong></section>
         <section class="brac-summary"><div><small>最近结果</small><strong data-role="summary">完成 0 · 跳过 0 · 失败 0</strong><small data-role="memory">已识别 0 个任务入口</small></div><time data-role="finished"></time></section>
@@ -2229,7 +2631,7 @@
     runButton.textContent = running && !ownsRun(state) ? "原标签页关闭后重新开始" : running ? "正在领取…" : "立即领取";
     progress.hidden = !running;
     root.querySelector('[data-role="progress-meta"]').textContent = running
-      ? `${state.currentStep?.section || "积分任务"} · ${state.index || 0}/${state.catalog?.length || 0}`
+      ? `${state.currentStep?.section || "积分任务"} · ${state.currentStep?.index ?? state.index ?? 0}/${state.currentStep?.total ?? state.catalog?.length ?? 0}`
       : "";
     root.querySelector('[data-role="progress-title"]').textContent =
       running ? state.currentStep?.title || "正在准备执行任务" : "";
@@ -2292,6 +2694,10 @@
     initializeTabIdentity,
     canRestartRun,
     createRandomSearchQuery,
+    normalizeDailySearchProgress,
+    createDailySearchDelay,
+    selectDailySearchQuery,
+    collectDailySearchTerms,
     getSearchStreakProgress,
     submitBingSearch,
     activateSearchStreakLink,

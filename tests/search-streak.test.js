@@ -273,6 +273,43 @@ test("legacy form submission preserves validation and cancelable submit handlers
   assert.equal(canceled.activity.some(([event]) => event === "submit"), false);
 });
 
+test("daily full navigation bypasses intercepted submit events and shadowed form methods", async () => {
+  const page = searchPage({ url: "https://www.bing.com/search?q=previous" });
+  let intercepted = 0;
+  page.form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    intercepted += 1;
+    page.location.href = "https://www.bing.com/search?q=updated-without-navigation";
+  });
+  page.form.submit = () => { throw new Error("shadowed submit method"); };
+  assert.equal(JSON.stringify(await page.submit("next headline", { forceFullNavigation: true })), '{"submitted":true}');
+  assert.equal(intercepted, 0);
+  assert.equal(page.location.href, "https://www.bing.com/search?q=previous");
+  assert.equal(page.activity.some(([event]) => event === "requestSubmit" || event === "submitEvent"), false);
+  assert.equal(page.activity.filter(([event]) => event === "submit").length, 1);
+  assert.deepEqual(page.activity.at(-1), ["submit", "/search", "_self"]);
+  assert.ok(page.activity.some(([event]) => event === "input"));
+  assert.ok(page.activity.some(([event]) => event === "change"));
+});
+
+test("daily full navigation retains form validity and action checks after input events", async () => {
+  const invalid = searchPage({ valid: false });
+  await assert.rejects(invalid.submit("next headline", { forceFullNavigation: true }), { message: "SEARCH_FORM_INVALID" });
+  assert.equal(invalid.activity.some(([event]) => event === "submit"), false);
+
+  const changed = searchPage();
+  changed.field.addEventListener("change", () => { changed.form.action = "https://example.com/search"; });
+  await assert.rejects(changed.submit("next headline", { forceFullNavigation: true }), { message: "SEARCH_FORM_UNSAFE" });
+  assert.equal(changed.activity.some(([event]) => event === "submit"), false);
+});
+
+test("daily full navigation maps a native submission error without retrying", async () => {
+  const page = searchPage();
+  Object.getPrototypeOf(page.form).submit = () => { page.activity.push(["attempt"]); throw new Error("native failure"); };
+  await assert.rejects(page.submit("next headline", { forceFullNavigation: true }), { message: "SEARCH_SUBMIT_FAILED" });
+  assert.equal(page.activity.filter(([event]) => event === "attempt").length, 1);
+});
+
 test("native submission failures have a stable error and never retry submission", async () => {
   const page = searchPage();
   Object.getPrototypeOf(page.form).requestSubmit = () => { page.activity.push(["attempt"]); throw new Error("native failure"); };

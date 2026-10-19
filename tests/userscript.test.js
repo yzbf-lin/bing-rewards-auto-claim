@@ -313,6 +313,10 @@ test("userscript resumes its final dashboard scan after navigation and claims on
   first.store.set("bingRewardsAutoClaimMemory", {
     "dashboard|button|领取待领取积分|": { lastCompletedDate: first.api.beijingDateKey(new Date(state.startedAt)) },
   });
+  // Keep this claim regression focused on the final claim and return flow.
+  first.store.set("bingRewardsAutoClaimDailySearchProgress", {
+    dateKey: first.api.beijingDateKey(new Date(state.startedAt)), completed: 20, queries: [],
+  });
   await first.api.executeCatalog(state);
   assert.equal(state.phase, "rescan-dashboard");
   assert.equal(location.href, "https://rewards.bing.com/dashboard");
@@ -322,8 +326,9 @@ test("userscript resumes its final dashboard scan after navigation and claims on
   await next.ready;
   const restored = next.store.get("bingRewardsAutoClaimState");
   await next.api.resumePhase(restored);
-  assert.equal(restored.results.length, 1);
+  assert.equal(restored.results.length, 2);
   assert.equal(restored.results[0].reason, "POINTS_CLAIMED");
+  assert.equal(restored.results[1].reason, "DAILY_SEARCH_ALREADY_COMPLETED");
   assert.equal(next.clicks, 1);
   assert.equal(restored.claimsRefreshed, true);
   assert.equal(restored.phase, "returning");

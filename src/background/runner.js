@@ -3,6 +3,7 @@ import { summarizeResults } from "./results.js";
 import { classifyEntry } from "../shared/task-policy.js";
 import { rememberTask, taskMemoryKey } from "../shared/task-memory.js";
 import { createRandomSearchQuery } from "../shared/search-query.js";
+import { normalizeDailySearchProgress } from "../shared/daily-search.js";
 
 function serializeError(error) {
   if (error instanceof Error) return error.message;
@@ -55,9 +56,10 @@ export function createClaimRunner({
         logger.warn("[Rewards Auto Claim] PROGRESS_PANEL_FAILED", serializeError(error));
       }
     }
-    const stored = await storage.get(["taskMemory"]);
+    const stored = await storage.get(["taskMemory", "dailySearchProgress"]);
     let taskMemory = stored.taskMemory ?? {};
     const runDateKey = beijingDateKey(startedAt);
+    let dailySearchProgress = normalizeDailySearchProgress(stored.dailySearchProgress, runDateKey);
 
     const recordTask = (entry, decision, outcome) => {
       taskMemory = rememberTask(taskMemory, {
@@ -250,6 +252,61 @@ export function createClaimRunner({
         run.progress.current = entryIndex + 1;
         run.summary = summarizeResults(run.results);
         await storage.set({ currentRun: run, taskMemory });
+      }
+
+      if (typeof driver.runDailySearches === "function") {
+        const searchStartedAt = now().getTime();
+        run.phase = "daily-search";
+        run.progress.total += 1;
+        run.currentStep = {
+          title: `每日搜索 ${dailySearchProgress.completed}/20`,
+          section: "每日搜索",
+          status: "running",
+          index: run.progress.total,
+          total: run.progress.total,
+        };
+        await storage.set({ currentRun: run });
+        const result = {
+          scope: "entry", section: "每日搜索", title: "每日搜索",
+          completedSearches: dailySearchProgress.completed, pointsVerified: false, rewardPoints: null,
+        };
+        try {
+          if (beijingDateKey(now()) !== runDateKey) throw new Error("DAILY_SEARCH_DATE_CHANGED");
+          if (dailySearchProgress.completed >= 20) {
+            Object.assign(result, { outcome: "SKIPPED", reason: "DAILY_SEARCH_ALREADY_COMPLETED" });
+          } else {
+            const searchResult = await driver.runDailySearches({
+              ...context,
+              dateKey: runDateKey,
+              progress: dailySearchProgress,
+              async onProgress(progress) {
+                dailySearchProgress = normalizeDailySearchProgress(progress, runDateKey);
+                run.currentStep.title = `每日搜索 ${dailySearchProgress.completed}/20`;
+                await storage.set({ currentRun: run, dailySearchProgress });
+              },
+            });
+            if (searchResult?.reason !== "DAILY_SEARCH_COMPLETED" || dailySearchProgress.completed !== 20) {
+              throw new Error("DAILY_SEARCH_NOT_CONFIRMED");
+            }
+            Object.assign(result, searchResult, { outcome: "COMPLETED" });
+          }
+          run.currentStep.status = result.outcome === "SKIPPED" ? "skipped" : "completed";
+          logger.info("[Rewards Auto Claim] DAILY_SEARCH_FINISHED", result);
+        } catch (error) {
+          Object.assign(result, {
+            outcome: "FAILED",
+            reason: serializeError(error),
+            completedSearches: dailySearchProgress.completed,
+          });
+          run.currentStep.status = "failed";
+          logger.warn(`[Rewards Auto Claim] DAILY_SEARCH_FAILED: ${result.reason}`);
+        }
+        result.title = `每日搜索 ${dailySearchProgress.completed}/20`;
+        result.durationMs = now().getTime() - searchStartedAt;
+        run.results.push(result);
+        run.progress.current = run.progress.total;
+        run.summary = summarizeResults(run.results);
+        await storage.set({ currentRun: run, dailySearchProgress });
       }
 
       if (context.targetTabId && typeof driver.restore === "function") {

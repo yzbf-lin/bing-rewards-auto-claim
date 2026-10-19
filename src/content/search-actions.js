@@ -1,5 +1,5 @@
 // Self-contained for chrome.scripting.executeScript and the standalone userscript.
-export async function submitBingSearch(query) {
+export async function submitBingSearch(query, { forceFullNavigation = false } = {}) {
   if (query == null || (typeof query === "string" && !query.trim())) {
     throw new Error("SEARCH_QUERY_REQUIRED");
   }
@@ -66,7 +66,11 @@ export async function submitBingSearch(query) {
     if (!usable(field) || field.form !== form) throw new Error("SEARCH_FORM_UNAVAILABLE");
     if (!form.checkValidity()) throw new Error("SEARCH_FORM_INVALID");
     form.setAttribute("target", "_self");
-    if (typeof Form.prototype.requestSubmit === "function") {
+    if (forceFullNavigation) {
+      // Bing can intercept submit events to update results in the same document.
+      // Daily searches persist their state for a new document before submitting.
+      Form.prototype.submit.call(form);
+    } else if (typeof Form.prototype.requestSubmit === "function") {
       Form.prototype.requestSubmit.call(form);
     } else {
       const event = new EventType("submit", { bubbles: true, cancelable: true });
